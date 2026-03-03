@@ -1,0 +1,243 @@
+---
+title: Reproducible Builds
+description: Build Muun Wallet using Docker to produce verifiable, reproducible APK files
+---
+
+Muun Wallet supports reproducible builds, allowing anyone to verify that the published APK matches the source code. This is accomplished using a Docker-based build process that ensures a consistent build environment.
+
+## Why Reproducible Builds?
+
+Reproducible builds provide:
+
+- **Transparency**: Anyone can verify the APK matches the published source code
+- **Security**: Ensures no malicious code was injected during the build process
+- **Trust**: Users can verify the app they download is built from the exact source code
+
+## Requirements
+
+- [Docker](https://www.docker.com/) >= 18.09
+- At least 16 GB of RAM allocated to Docker
+- At least 60 GB of free disk space
+
+## Docker Configuration
+
+### Allocate Resources
+
+Ensure Docker has sufficient resources:
+
+<CodeGroup>
+```bash Linux
+# Docker Desktop: Preferences → Resources
+# Set Memory to at least 16 GB
+# Set Disk space to at least 60 GB
+```
+
+```bash macOS
+# Docker Desktop → Preferences → Resources
+# Memory: 16 GB minimum
+# Disk image size: 60 GB minimum
+```
+</CodeGroup>
+
+### Enable BuildKit
+
+The build process requires Docker BuildKit for optimal performance and output handling.
+
+## Building the APK
+
+<Steps>
+  <Step title="Create Output Directory">
+    Create a directory to receive the build artifacts:
+    
+    ```bash
+    mkdir -p apk
+    ```
+  </Step>
+
+  <Step title="Run Docker Build">
+    Execute the reproducible build:
+    
+    ```bash
+    DOCKER_BUILDKIT=1 docker build -f android/Dockerfile -o apk .
+    ```
+    
+    This process typically takes 10-20 minutes depending on your hardware.
+  </Step>
+
+  <Step title="Verify Output">
+    Check the generated APK files:
+    
+    ```bash
+    ls -lh apk/
+    ```
+    
+    You should see:
+    - `apolloui-prod-arm64-v8a-release-unsigned.apk`
+    - `apolloui-prod-armeabi-v7a-release-unsigned.apk`
+    - `apolloui-prod-x86-release-unsigned.apk`
+    - `apolloui-prod-x86_64-release-unsigned.apk`
+    - `mapping.txt` (ProGuard mapping file)
+  </Step>
+</Steps>
+
+## Build Process Details
+
+The Dockerfile uses a multi-stage build process to ensure reproducibility:
+
+### Stage 1: Base Android Builder
+
+```dockerfile
+FROM openjdk:17-jdk-slim
+```
+
+Sets up the Android build environment with:
+
+- **OpenJDK 17** (pinned digest for reproducibility)
+- **Android NDK** version 22.0.7026061
+- **Android Platform** version 28
+- **Android Build Tools** version 28.0.3
+- **Go** version 1.24.7
+
+### Stage 2: Rust Builder
+
+```dockerfile
+FROM rust:1.84
+```
+
+Configures Rust toolchain:
+
+- **Rust nightly** 2024-12-16
+- **Target architectures**: 
+  - `aarch64-linux-android`
+  - `armv7-linux-androideabi`
+  - `i686-linux-android`
+  - `x86_64-linux-android`
+
+### Stage 3: librs Build
+
+Builds Rust libraries:
+
+```bash
+RUN TARGETS="$TARGETS" USE_HOST_CARGO=true libwallet/librs/makelibs.sh
+```
+
+### Stage 4: Final Build
+
+Combines everything and builds the APK:
+
+```bash
+RUN tools/bootstrap-gomobile.sh && \
+    (cd libwallet; go clean) && \
+    ./gradlew :android:apolloui:clean && \
+    ./gradlew :android:libwallet:build :android:apolloui:assembleProdRelease
+```
+
+### Stage 5: Output
+
+Extracts only the necessary artifacts using a scratch image, ensuring minimal output size.
+
+## Environment Variables
+
+The following environment variables are set during the build:
+
+| Variable | Value | Purpose |
+|----------|-------|----------|
+| `NDK_VERSION` | 22.0.7026061 | Android NDK version |
+| `ANDROID_PLATFORM_VERSION` | 28 | Target Android API level |
+| `ANDROID_BUILD_TOOLS_VERSION` | 28.0.3 | Build tools version |
+| `GO_VERSION` | 1.24.7 | Go language version |
+| `ANDROID_HOME` | /opt/android-sdk-linux | Android SDK location |
+| `ANDROID_SDK_ROOT` | /opt/android-sdk-linux | Android SDK root |
+| `ANDROID_NDK_HOME` | ${ANDROID_HOME}/ndk/${NDK_VERSION} | NDK location |
+| `GOPATH` | /go | Go workspace |
+
+## Reproducibility Features
+
+### Pinned Dependencies
+
+- Base Docker image uses SHA256 digest
+- All tool versions are explicitly specified
+- Go modules are version-locked
+- Rust toolchain is pinned to specific nightly
+
+### Build Flags
+
+The build uses flags that ensure reproducibility:
+
+- `-trimpath`: Removes local file system paths from binaries
+- `-ldflags="-buildid=. -v"`: Sets consistent build ID
+
+### 16KB Page Alignment
+
+For Android targetSdk 35+ compatibility:
+
+```bash
+export CGO_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+```
+
+## Build Cache
+
+Docker will cache intermediate layers. To force a clean build:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --no-cache -f android/Dockerfile -o apk .
+```
+
+## Verifying Reproducibility
+
+To verify the build is truly reproducible:
+
+1. Build the APK twice on different machines
+2. Compare the unsigned APK files byte-by-byte:
+
+```bash
+sha256sum apk/apolloui-prod-arm64-v8a-release-unsigned.apk
+```
+
+The SHA256 checksums should match exactly.
+
+## CI/CD Integration
+
+This Dockerfile is used by Muun's GitHub Actions workflow (`build-release.yml`) to produce official builds. Any changes to the Dockerfile will affect the official build process.
+
+<Warning>
+  Changes to `android/Dockerfile` impact the reproducible build verification process and official releases. Test thoroughly before modifying.
+</Warning>
+
+## Troubleshooting
+
+### Insufficient Memory
+
+If the build fails with out-of-memory errors:
+
+```bash
+# Increase Docker memory limit to 16 GB or more
+# Docker Desktop → Preferences → Resources → Memory
+```
+
+### Insufficient Disk Space
+
+If the build fails due to disk space:
+
+```bash
+# Clean up Docker
+docker system prune -a
+
+# Ensure at least 60 GB free
+df -h
+```
+
+### Build Timeout
+
+For slower machines, the build may take longer:
+
+```bash
+# Monitor build progress
+DOCKER_BUILDKIT=1 docker build --progress=plain -f android/Dockerfile -o apk .
+```
+
+## Next Steps
+
+- [APK Verification](/development/verification) - Verify your build against an installed APK
+- [Building Locally](/development/building-locally) - Build without Docker for development
+- [Testing](/development/testing) - Run the test suite

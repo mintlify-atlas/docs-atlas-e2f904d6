@@ -1,0 +1,197 @@
+---
+title: "2-of-2 Multisig Implementation"
+description: "Learn how Muun Wallet implements collaborative 2-of-2 multisig architecture for enhanced security and sovereignty"
+icon: "key"
+---
+
+## Overview
+
+Muun Wallet implements a **collaborative 2-of-2 multisig architecture** where every bitcoin transaction requires signatures from both the user's key and Muun's key. This design ensures that neither party can unilaterally move funds, providing enhanced security while maintaining user sovereignty.
+
+<Note>
+Muun uses standard Bitcoin multisig scripts (not smart contracts), ensuring compatibility across the Bitcoin ecosystem and enabling recovery through any Bitcoin-compatible wallet.
+</Note>
+
+## How It Works
+
+### Key Structure
+
+The wallet uses hierarchical deterministic (HD) keys following BIP32:
+
+- **User Key**: Generated and stored on the user's device
+- **Muun Key**: Generated and managed by Muun's servers
+- **Derivation Path**: Both keys derive child keys using the same path structure
+
+### Address Generation
+
+Muun supports multiple address versions, with v2+ using 2-of-2 multisig:
+
+```go
+// From addresses/v2.go
+func createMultisigRedeemScript(userKey, muunKey *hdkeychain.ExtendedKey, 
+    network *chaincfg.Params) ([]byte, error) {
+    
+    userPublicKey, _ := userKey.ECPubKey()
+    muunPublicKey, _ := muunKey.ECPubKey()
+    
+    return txscript.MultiSigScript([]*btcutil.AddressPubKey{
+        userAddress,
+        WalletAddress,
+    }, 2)
+}
+```
+
+The address creation process:
+
+1. Derive child keys for both user and Muun using the same path
+2. Create a 2-of-2 multisig redeem script from the public keys
+3. Generate a P2SH or SegWit address from the script hash
+
+### Transaction Signing
+
+Every transaction follows this collaborative signing flow:
+
+```go
+// From V2.go:53
+// This is a standard 2 of 2 multisig script
+// 0 because of a bug in bitcoind
+// Then the 2 sigs: first the users and then muuns
+// Last, the script that contains the two pub keys and OP_CHECKMULTISIG
+```
+
+**Signing Process:**
+
+1. User initiates a transaction
+2. User's app creates and signs the transaction locally
+3. Transaction is sent to Muun's server
+4. Muun validates and co-signs the transaction
+5. Fully signed transaction is broadcast to the Bitcoin network
+
+<Warning>
+Muun's signature is required for all transactions. If Muun's servers are unavailable, users can still recover funds using their Emergency Kit, which contains both encrypted keys.
+</Warning>
+
+## Address Versions
+
+Muun has evolved its address scheme over time:
+
+| Version | Type | Description |
+|---------|------|-------------|
+| v1 | Single-sig | Legacy single-signature addresses |
+| v2 | 2-of-2 P2SH | Standard multisig with P2SH wrapping |
+| v3 | 2-of-2 P2WSH | Native SegWit multisig |
+| v4 | 2-of-2 P2WSH | Enhanced SegWit implementation |
+| v5 | 2-of-2 Taproot | Taproot with MuSig2 |
+| v6 | 2-of-2 Taproot | Latest Taproot implementation |
+
+### MuSig2 for Taproot
+
+For Taproot addresses (v5+), Muun uses **MuSig2** for signature aggregation:
+
+```go
+// From musig/musig2.go
+const (
+    // Muun's variant based on secp256k1_zkp implementation
+    Musig2v040Muun MusigVersion = 40
+    
+    // Version 1.0.0rc2 of the MuSig2 BIP draft
+    Musig2v100 MusigVersion = 100
+)
+```
+
+MuSig2 provides:
+- **Privacy**: Multisig appears as a single-sig transaction on-chain
+- **Efficiency**: Smaller transaction size and lower fees
+- **Security**: Maintains 2-of-2 security guarantees
+
+## Security Benefits
+
+### Multi-Party Control
+
+<Tip>
+The 2-of-2 scheme means:
+- Muun cannot steal your funds (requires your signature)
+- Attackers who compromise your device cannot steal funds (requires Muun's signature)
+- You maintain sovereignty (can recover without Muun using your Emergency Kit)
+</Tip>
+
+### Defense Against Attacks
+
+1. **Device Compromise**: An attacker with your phone cannot move funds without Muun's cooperation
+2. **Server Compromise**: Even if Muun's servers are compromised, attackers need both keys
+3. **Phishing Protection**: Muun can validate transaction details before co-signing
+
+### Recovery Path
+
+Users always maintain a recovery option:
+
+- **Emergency Kit** contains both encrypted keys
+- **Recovery Code** can decrypt the keys
+- Can sweep funds to any Bitcoin wallet without Muun's cooperation
+
+See [Emergency Kit](/features/emergency-kit) and [Recovery](/features/recovery) for details.
+
+## Implementation Details
+
+### Script Structure (V2)
+
+The witness/script stack for a v2 transaction:
+
+```
+0                    # Required due to Bitcoin Core bug
+<user_signature>     # User's signature  
+<muun_signature>     # Muun's signature
+<redeem_script>      # Script containing both pubkeys + OP_CHECKMULTISIG
+```
+
+Source: `libwallet/V2.go:53-56`
+
+### Key Derivation
+
+Both parties derive keys using identical paths:
+
+```
+m / purpose' / coin_type' / account' / change / address_index
+```
+
+This ensures:
+- Deterministic address generation
+- Easy backup and recovery
+- Standard BIP32 compatibility
+
+## User Experience
+
+### For Users
+
+The multisig architecture is **transparent** to users:
+
+- Transactions appear instant (co-signing happens automatically)
+- No additional steps required
+- Standard Bitcoin addresses
+- Emergency recovery available if needed
+
+### For Developers
+
+When integrating or understanding Muun:
+
+- All UTXOs require both signatures
+- Server API provides Muun's signature after validation
+- Recovery tools must handle 2-of-2 script construction
+- Multiple address versions must be supported for backward compatibility
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Emergency Kit" icon="file-shield" href="/features/emergency-kit">
+    PDF backup containing both encrypted keys for recovery
+  </Card>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    How to recover funds without Muun's cooperation
+  </Card>
+  <Card title="Lightning Network" icon="bolt" href="/features/lightning-network">
+    How multisig integrates with Lightning payments
+  </Card>
+  <Card title="Submarine Swaps" icon="arrow-right-arrow-left" href="/features/submarine-swaps">
+    Trustless swaps between on-chain and Lightning
+  </Card>
+</CardGroup>

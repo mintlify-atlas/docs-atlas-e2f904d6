@@ -1,0 +1,314 @@
+---
+title: 'Key-Value Storage APIs'
+description: 'Persistent key-value storage with typed values and batch operations'
+---
+
+## Overview
+
+The Key-Value Storage API provides persistent storage for wallet configuration, preferences, and security-critical data. All values are strongly typed and validated against a predefined schema.
+
+## Storage Architecture
+
+### Value Types
+
+The storage system supports five primitive types:
+
+- **int32** - 32-bit integer values
+- **int64** - 64-bit long integer values
+- **double** - 64-bit floating point values
+- **string** - UTF-8 string values
+- **bool** - Boolean true/false values
+- **null** - Explicit null values
+
+### Schema Classification
+
+Each key in the storage schema is classified with:
+
+<ParamField path="BackupType" type="enum">
+  Determines backup behavior:
+  - `NoAutoBackup` - Not included in automatic backups
+  - `SyncAutoBackup` - Backed up synchronously
+  - `AsyncAutoBackup` - Backed up asynchronously
+</ParamField>
+
+<ParamField path="BackupSecurity" type="enum">
+  Security level for backed up data:
+  - `NotApplicable` - No backup security requirement
+  - `Plain` - Backed up without encryption
+  - `Authenticated` - Backed up with authentication
+  - `Encrypted` - Backed up with encryption
+</ParamField>
+
+<ParamField path="SecurityCritical" type="bool">
+  Whether the data is security-critical
+</ParamField>
+
+<ParamField path="ValueType" type="ValueType">
+  The data type for this key (int32, int64, double, string, or bool)
+</ParamField>
+
+## RPC Methods
+
+### Save
+
+Store or update a single key-value pair.
+
+**Request:** `SaveRequest`
+
+<ParamField path="key" type="string" required>
+  The key to store. Must be defined in the storage schema.
+</ParamField>
+
+<ParamField path="value" type="Value" required>
+  The value to store. Can be one of: null_value, double_value, int_value, long_value, string_value, or bool_value.
+</ParamField>
+
+**Response:** `google.protobuf.Empty`
+
+**Example Value Types:**
+
+```proto
+message Value {
+  oneof kind {
+    NullValue null_value = 1;
+    double double_value = 2;
+    int32 int_value = 3;
+    int64 long_value = 4;
+    string string_value = 5;
+    bool bool_value = 6;
+  }
+}
+```
+
+---
+
+### Get
+
+Retrieve a value by its key.
+
+**Request:** `GetRequest`
+
+<ParamField path="key" type="string" required>
+  The key to retrieve. Must be defined in the storage schema.
+</ParamField>
+
+**Response:** `GetResponse`
+
+<ResponseField name="value" type="Value">
+  The stored value, typed according to the schema definition. Returns null_value if the key exists but has no value.
+</ResponseField>
+
+---
+
+### Delete
+
+Remove a key-value pair from storage.
+
+**Request:** `DeleteRequest`
+
+<ParamField path="key" type="string" required>
+  The key to delete. Must be defined in the storage schema.
+</ParamField>
+
+**Response:** `google.protobuf.Empty`
+
+---
+
+### SaveBatch
+
+Store or update multiple key-value pairs in a single operation.
+
+**Request:** `SaveBatchRequest`
+
+<ParamField path="items" type="Struct" required>
+  A map of keys to values. All keys must be defined in the storage schema.
+</ParamField>
+
+**Response:** `google.protobuf.Empty`
+
+**Struct Definition:**
+
+```proto
+message Struct {
+  map<string, Value> fields = 1;
+}
+```
+
+---
+
+### GetBatch
+
+Retrieve multiple values by their keys.
+
+**Request:** `GetBatchRequest`
+
+<ParamField path="keys" type="repeated string" required>
+  List of keys to retrieve. All keys must be defined in the storage schema.
+</ParamField>
+
+**Response:** `GetBatchResponse`
+
+<ResponseField name="items" type="Struct">
+  A map of keys to their stored values. Missing keys are omitted from the result.
+</ResponseField>
+
+---
+
+### GetByPrefix
+
+Retrieve all key-value pairs where the key starts with a given prefix.
+
+**Request:** `GetByPrefixRequest`
+
+<ParamField path="prefix" type="string" required>
+  The key prefix to match. Returns all keys beginning with this string.
+</ParamField>
+
+**Response:** `GetBatchResponse`
+
+<ResponseField name="items" type="Struct">
+  A map of matching keys to their stored values. Returns an empty map if no keys match.
+</ResponseField>
+
+## Predefined Storage Keys
+
+The following keys are predefined in the storage schema:
+
+### User Preferences
+
+<ParamField path="isBalanceHidden" type="bool">
+  Whether the wallet balance is hidden in the UI
+  - Backup: NoAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="nightMode" type="string">
+  Night mode preference setting
+  - Backup: NoAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="biometricsOptIn" type="bool">
+  Whether user has opted in to biometric authentication
+  - Backup: NoAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="pinLength" type="int32">
+  Length of the user's PIN
+  - Backup: NoAutoBackup
+  - Security Critical: No
+</ParamField>
+
+### Security Card Data
+
+<ParamField path="securityCardXpubSerialized" type="string">
+  Serialized extended public key from the NFC security card
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="secretCardBytesInHex" type="string">
+  Security card secret in hexadecimal format (mock Houston only)
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="securityCardUsageCount" type="int32">
+  Number of times the security card has been used
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="securityCardPairingSlot" type="int32">
+  Pairing slot identifier for the security card
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+### Encrypted Keys
+
+<ParamField path="unverifiedEncryptedMuungKeyPrototype" type="string">
+  Unverified encrypted Muun key (prototype)
+  - Backup: AsyncAutoBackup (Plain)
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="verifiedEncryptedMuunKeyPrototype" type="string">
+  Verified encrypted Muun key (prototype)
+  - Backup: AsyncAutoBackup (Authenticated)
+  - Security Critical: Yes
+</ParamField>
+
+<ParamField path="encryptedUserKeyPrototype" type="string">
+  Encrypted user key (prototype)
+  - Backup: AsyncAutoBackup (Authenticated)
+  - Security Critical: Yes
+</ParamField>
+
+### Feature Flags
+
+<ParamField path="featureFlagOverrides:nfcCardV2" type="bool">
+  Override for NFC Card V2 feature flag
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+### Mock Houston Keys
+
+<ParamField path="lastRandomPrivKeyInHex" type="string">
+  Last random private key in hex (temporary, for mock Houston)
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+<ParamField path="timeSinceLastChallengeUnixMillis" type="int64">
+  Unix timestamp in milliseconds of last challenge (temporary)
+  - Backup: AsyncAutoBackup
+  - Security Critical: No
+</ParamField>
+
+## Implementation Details
+
+### Type Conversion
+
+Values are stored as strings in the underlying database and converted to/from their typed representations using the schema's ValueType definition:
+
+- **IntType**: Converts between int32 and string using base-10 parsing
+- **LongType**: Converts between int64 and string using base-10 parsing
+- **DoubleType**: Converts between float64 and string using standard float parsing
+- **StringType**: Stores strings directly without conversion
+- **BoolType**: Converts between bool and string ("true"/"false")
+
+### Validation
+
+All operations validate that:
+1. The requested key exists in the storage schema
+2. The provided value type matches the schema's ValueType
+3. Type conversion succeeds before storage
+
+Operations will fail with an error if any validation check fails.
+
+### Database Backend
+
+Storage is backed by a SQLite database using the `walletdb` package. The KeyValueStorage wrapper provides:
+- Automatic connection management
+- Type-safe conversion between Go types and database strings
+- Schema-based validation
+
+## Error Handling
+
+Storage operations may return errors for:
+
+- **Unknown Key**: Key not defined in storage schema
+- **Type Mismatch**: Value type doesn't match schema definition
+- **Conversion Error**: Failed to convert value to/from string
+- **Database Error**: Underlying database operation failed
+
+See [WalletService Error Handling](/api/wallet-service#error-handling) for error structure details.
+
+## Source References
+
+- Protobuf definition: `libwallet/presentation/api/wallet_service.proto:29-35`
+- Storage implementation: `libwallet/storage/storage.go`
+- Schema definition: `libwallet/storage/schema.go`

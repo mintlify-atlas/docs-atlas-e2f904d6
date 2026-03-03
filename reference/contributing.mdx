@@ -1,0 +1,56 @@
+---
+title: Contributing Guidelines
+description: How to contribute to Muun Wallet development
+---
+
+## Current Contribution Policy
+
+We are currently not accepting contributions in PR form. We are a small team and our development flow cannot manage external contributions yet. Sadly, this includes contributions for support for other languages.
+
+## We Value Your Feedback
+
+Having said that, we love to get feedback and suggestions for improvements. We have included some external contributions in the past, just not in the "accept and merge" a PR traditional way.
+
+### How to Provide Feedback
+
+- **Bug Reports:** If you find a bug, please report it through GitHub Issues
+- **Feature Suggestions:** We welcome ideas for new features and improvements
+- **Security Issues:** See our [Responsible Disclosure](/reference/responsible-disclosure) policy for security-related reports
+
+## Project Structure
+
+The app follows the [clean architecture](https://fernandocejas.com/2014/09/03/architecting-android-the-clean-way/) pattern, and has three layers:
+
+### Architecture Layers
+
+- **Data:** Handles the data backends, such as the database, the operating system, or the network
+- **Domain:** Contains the models and business logic (use cases in clean architecture lingo)
+- **Presentation:** Contains the UI code
+
+There's also a pure java **common** module with code shared all over.
+
+## Building the Project
+
+For instructions on how to build Muun Wallet, please refer to [BUILD.md](https://github.com/muun/apollo/blob/master/BUILD.md) in the repository.
+
+## Auditing the Code
+
+If you're interested in auditing the codebase:
+
+- Most of the key handling and transaction crafting operations happen in the **common** module
+- All the keystore and data handling happens in the **data** layer
+- All the business logic that decides when to sign what happens in the **domain** layer
+- The **presentation** layer only depends on the **domain** layer, it never references **data** directly
+
+## Runtime Requirements
+
+- Android version 5.0 (API level 21) or higher
+- Google Play services
+
+## Source Code
+
+The full source code is available on GitHub:
+
+<Card title="Muun Apollo Repository" icon="github" href="https://github.com/muun/apollo">
+  View the complete Android wallet source code
+</Card>

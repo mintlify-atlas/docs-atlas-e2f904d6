@@ -1,0 +1,247 @@
+---
+title: 'Address Generation'
+description: 'Bitcoin address and payment URI handling'
+icon: 'location-dot'
+---
+
+## Overview
+
+The libwallet address module provides comprehensive Bitcoin address generation and payment URI parsing functionality. It supports multiple address versions, BIP70/BIP72 payment requests, and unified QR codes with both on-chain and Lightning Network payments.
+
+## Address Versions
+
+The library supports multiple address scheme versions:
+
+```go
+const (
+    AddressVersionV1      = addresses.V1
+    AddressVersionV2      = addresses.V2
+    AddressVersionV3      = addresses.V3
+    AddressVersionV4      = addresses.V4
+    AddressVersionV5      = addresses.V5
+    AddressVersionSwapsV1 = addresses.SubmarineSwapV1
+    AddressVersionSwapsV2 = addresses.SubmarineSwapV2
+)
+```
+
+## MuunPaymentURI Structure
+
+Represents a parsed payment URI containing on-chain and/or Lightning payment information.
+
+```go
+type MuunPaymentURI struct {
+    Address      string
+    Label        string
+    Message      string
+    Amount       string
+    Uri          string
+    Bip70Url     string
+    CreationTime string
+    ExpiresTime  string
+    Invoice      *Invoice
+}
+```
+
+<ParamField path="Address" type="string">
+  The Bitcoin address (bech32, P2PKH, P2SH, etc.)
+</ParamField>
+
+<ParamField path="Label" type="string">
+  Optional label for the payment
+</ParamField>
+
+<ParamField path="Message" type="string">
+  Optional message describing the payment
+</ParamField>
+
+<ParamField path="Amount" type="string">
+  Payment amount in BTC (decimal notation)
+</ParamField>
+
+<ParamField path="Uri" type="string">
+  The original URI string
+</ParamField>
+
+<ParamField path="Bip70Url" type="string">
+  BIP70 payment request URL (if present)
+</ParamField>
+
+<ParamField path="Invoice" type="*Invoice">
+  Lightning invoice (for unified QR codes)
+</ParamField>
+
+## GetPaymentURI
+
+Parses a Bitcoin URI, address, or unified QR code into a MuunPaymentURI structure.
+
+```go
+func GetPaymentURI(rawInput string, network *Network) (*MuunPaymentURI, error)
+```
+
+<ParamField path="rawInput" type="string" required>
+  Bitcoin URI (bitcoin:), plain address, or unified QR code
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  Network configuration (mainnet, testnet, regtest)
+</ParamField>
+
+**Returns:** `*MuunPaymentURI` - Parsed payment URI structure  
+**Errors:** `ErrInvalidURI`, `ErrInvalidInvoice`
+
+### Examples
+
+<CodeGroup>
+
+```go Simple Address
+network := Mainnet()
+uri, err := GetPaymentURI("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", network)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(uri.Address) // bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq
+```
+
+```go Bitcoin URI with Amount
+network := Mainnet()
+uri, err := GetPaymentURI(
+    "bitcoin:bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq?amount=0.001&label=Donation",
+    network,
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(uri.Amount) // 0.001
+fmt.Println(uri.Label)  // Donation
+```
+
+```go Unified QR Code
+network := Mainnet()
+uri, err := GetPaymentURI(
+    "bitcoin:bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq?lightning=lnbc10u1...",
+    network,
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(uri.Address)         // bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq
+fmt.Println(uri.Invoice.Sats)    // Invoice amount
+```
+
+</CodeGroup>
+
+## DoPaymentRequestCall
+
+Fetches and parses a BIP70/BIP72 payment request from a URL.
+
+```go
+func DoPaymentRequestCall(url string, network *Network) (*MuunPaymentURI, error)
+```
+
+<ParamField path="url" type="string" required>
+  BIP70 payment request URL
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  Network configuration
+</ParamField>
+
+**Returns:** `*MuunPaymentURI` - Parsed payment request  
+**Errors:** `ErrNetwork` - Network error or invalid response
+
+### Example
+
+```go
+network := Mainnet()
+uri, err := DoPaymentRequestCall("https://example.com/payment?r=xyz", network)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(uri.Address)
+fmt.Println(uri.Amount)
+fmt.Println(uri.Message)
+```
+
+## MuunAddress Interface
+
+Defines the interface for Muun-generated addresses with derivation path information.
+
+```go
+type MuunAddress interface {
+    Version() int
+    DerivationPath() string
+    Address() string
+}
+```
+
+<ParamField path="Version" type="int">
+  Address scheme version (V1-V5, SubmarineSwapV1/V2)
+</ParamField>
+
+<ParamField path="DerivationPath" type="string">
+  HD wallet derivation path (e.g., "m/schema:1'/recovery:1'/external:0/42")
+</ParamField>
+
+<ParamField path="Address" type="string">
+  The actual Bitcoin address string
+</ParamField>
+
+## URI Scheme Support
+
+The library handles multiple URI schemes:
+
+- `bitcoin:` - Standard Bitcoin URI (BIP21)
+- `bitcoin://` - Alternative format (iOS compatibility)
+- `muun:` - Muun-specific scheme (converted to bitcoin:)
+
+## Error Handling
+
+```go
+const (
+    ErrInvalidURI     = "invalid_uri"
+    ErrInvalidInvoice = "invalid_invoice"
+    ErrNetwork        = "network_error"
+)
+```
+
+Common error scenarios:
+
+- Invalid address encoding
+- Network mismatch (testnet address on mainnet)
+- Amount mismatch in unified QR codes
+- Invalid BIP70 response
+- Malformed URI parameters
+
+## Validation
+
+The library performs comprehensive validation:
+
+- **Address validation**: Checks address format and network compatibility
+- **Amount validation**: Handles scientific notation, validates numeric values
+- **Unified QR validation**: Ensures on-chain and Lightning amounts match
+- **BIP70 validation**: Verifies payment request structure and scripts
+
+<Note>
+When both on-chain and Lightning amounts are present in a unified QR code, they must match exactly or an `ErrInvalidURI` error is returned.
+</Note>
+
+## Advanced Features
+
+### Amount Parsing
+
+The library handles flexible amount formats:
+- Standard decimal notation ("0.001")
+- Scientific notation (converted to decimal)
+- Automatic validation for NaN/Inf values
+
+### BIP70 Support
+
+Full support for BIP70 payment protocol:
+- Payment request fetching with proper Accept headers
+- Payment details parsing (protobuf)
+- Multiple outputs handling
+- Expiration time tracking
+
+### Legacy Compatibility
+
+Supports legacy Muun P2P/contacts URIs for backward compatibility.

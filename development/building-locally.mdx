@@ -1,0 +1,164 @@
+---
+title: Building Locally
+description: Instructions for building Muun Wallet from source on your local machine
+---
+
+This guide covers how to build Muun Wallet locally on your development machine. For reproducible builds using Docker, see [Reproducible Builds](/development/reproducible-builds).
+
+## Requirements
+
+Before building Muun Wallet, ensure you have the following installed:
+
+- [OpenJDK](https://adoptopenjdk.net/?variant=openjdk11&jvmVariant=hotspot) >= 8
+- [Golang](https://golang.org/dl/) = 1.24.x
+- [Android NDK](https://developer.android.com/ndk/downloads) >= 22
+- [Docker](https://docs.docker.com/engine/install/) >= 28
+
+## Environment Setup
+
+### Configure Android NDK
+
+Set the `ANDROID_NDK_HOME` environment variable to point to your NDK installation directory:
+
+<CodeGroup>
+```bash Linux/macOS
+export ANDROID_NDK_HOME=/path/to/android-ndk
+```
+
+```powershell Windows
+$env:ANDROID_NDK_HOME="C:\path\to\android-ndk"
+```
+</CodeGroup>
+
+### Start Docker
+
+Make sure Docker is running before proceeding with the build:
+
+<CodeGroup>
+```bash Linux
+sudo systemctl start docker
+```
+
+```bash macOS
+open -a Docker
+```
+</CodeGroup>
+
+## Build Steps
+
+<Steps>
+  <Step title="Build Rust Libraries">
+    Build the Rust libraries required by libwallet:
+    
+    ```bash
+    libwallet/librs/makelibs.sh
+    ```
+    
+    This script compiles the Rust components for all Android architectures (arm64-v8a, armeabi-v7a, x86, x86_64).
+  </Step>
+
+  <Step title="Bootstrap Gomobile">
+    Install and set up the Go mobile toolchain:
+    
+    ```bash
+    tools/bootstrap-gomobile.sh
+    ```
+    
+    This installs `gomobile` and `gobind` tools used to build Go code for Android.
+  </Step>
+
+  <Step title="Build libwallet">
+    Generate the libwallet Android library (AAR):
+    
+    ```bash
+    tools/libwallet-android.sh
+    ```
+    
+    This creates the `libwallet.aar` file that contains the Go-based wallet logic compiled for Android.
+  </Step>
+
+  <Step title="Build the APK">
+    Build the production release APK using Gradle:
+    
+    ```bash
+    ./gradlew :android:apolloui:assembleProdRelease
+    ```
+    
+    The unsigned APK files will be generated in:
+    `android/apolloui/build/outputs/apk/prod/release/`
+  </Step>
+</Steps>
+
+## Build Output
+
+After successful compilation, you'll find the following APK files:
+
+- `apolloui-prod-arm64-v8a-release-unsigned.apk` - For 64-bit ARM devices
+- `apolloui-prod-armeabi-v7a-release-unsigned.apk` - For 32-bit ARM devices
+- `apolloui-prod-x86-release-unsigned.apk` - For 32-bit x86 devices
+- `apolloui-prod-x86_64-release-unsigned.apk` - For 64-bit x86 devices
+
+## Build Scripts Reference
+
+### bootstrap-gomobile.sh
+
+This script prepares the Go mobile build environment:
+
+- Creates a shared dependency cache at `libwallet/.build/pkg`
+- Installs `gomobile` and `gobind` tools
+- Sets up `GOMODCACHE` for dependency management
+
+Location: `tools/bootstrap-gomobile.sh`
+
+### libwallet-android.sh
+
+This script builds the libwallet Android archive:
+
+- Configures build cache directories
+- Sets 16KB page alignment flags for Android targetSdk 35+ compatibility
+- Runs `gomobile bind` with reproducible build flags (`-trimpath`, `-ldflags="-buildid=. -v"`)
+- Targets Android API level 19 as minimum
+- Binds multiple Go packages: `libwallet`, `newop`, `app_provided_data`, `libwallet_init`
+
+Location: `tools/libwallet-android.sh`
+
+## Troubleshooting
+
+### Docker Not Running
+
+If you see errors about Docker, ensure the Docker daemon is running:
+
+```bash
+docker info
+```
+
+### NDK Not Found
+
+Verify your `ANDROID_NDK_HOME` variable is set correctly:
+
+```bash
+echo $ANDROID_NDK_HOME
+ls $ANDROID_NDK_HOME
+```
+
+### Gomobile Build Errors
+
+If you encounter issues with `src-android-*` directories, the build script automatically cleans these:
+
+```bash
+rm -rf libwallet/.build/android/src-android-*
+```
+
+### Wrong Go Version
+
+Ensure you're using Go 1.24.x:
+
+```bash
+go version
+```
+
+## Next Steps
+
+- [Reproducible Builds](/development/reproducible-builds) - Build using Docker for verification
+- [APK Verification](/development/verification) - Verify your build matches official releases
+- [Testing](/development/testing) - Run the test suite

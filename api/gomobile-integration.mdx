@@ -1,0 +1,338 @@
+---
+title: "Gomobile Integration"
+description: "Building libwallet for Android and iOS using gomobile"
+---
+
+## Overview
+
+Libwallet uses [gomobile](https://godoc.org/golang.org/x/mobile/cmd/gomobile) to create mobile-compatible bindings from Go code. This allows the same core wallet logic to be shared across Android and iOS applications.
+
+<Info>
+Gomobile generates platform-specific libraries (`.aar` for Android, `.framework` for iOS) that can be imported directly into mobile projects.
+</Info>
+
+## How Gomobile Works
+
+Gomobile binds Go packages to mobile platforms by:
+
+1. **Code Generation**: Creates platform-specific wrapper code
+2. **Type Mapping**: Converts Go types to Java/Kotlin (Android) or Objective-C/Swift (iOS)
+3. **Library Packaging**: Produces native library artifacts (AAR/framework)
+
+### Type Limitations
+
+Gomobile has restrictions on exportable types:
+
+- No Go slices (use custom wrapper types)
+- No maps (use custom collections)
+- Limited struct field visibility
+- No variadic functions
+
+This is why libwallet implements bridge types like `StringList` and `IntList` (`bridge.go:11-81`):
+
+```go
+type StringList struct {
+    elems []string
+}
+
+func NewStringList() *StringList {
+    return &StringList{}
+}
+
+func (l *StringList) Length() int {
+    return len(l.elems)
+}
+
+func (l *StringList) Get(index int) string {
+    return l.elems[index]
+}
+
+func (l *StringList) Add(s string) {
+    l.elems = append(l.elems, s)
+}
+```
+
+<Note>
+These wrapper types provide a mobile-friendly API while internally using native Go data structures.
+</Note>
+
+## Build Process
+
+### Android Build
+
+The Android build process is automated through `tools/libwallet-android.sh`:
+
+#### 1. Bootstrap Gomobile
+
+First, the build script ensures gomobile is installed (`tools/bootstrap-gomobile.sh:12-14`):
+
+```bash
+GOMODCACHE="$build_dir/pkg" \
+    go install golang.org/x/mobile/cmd/gomobile && \
+    go install golang.org/x/mobile/cmd/gobind
+```
+
+<Info>
+The script uses a shared `GOMODCACHE` to cache dependencies and speed up subsequent builds.
+</Info>
+
+#### 2. Prepare Build Environment
+
+The script creates necessary cache directories (`tools/libwallet-android.sh:18-22`):
+
+```bash
+mkdir -p "$build_dir/android"
+mkdir -p "$build_dir/pkg"
+
+GOCACHE="$build_dir/android"
+```
+
+#### 3. Clean Temporary Files
+
+Gomobile can create conflicting temporary directories, so these are cleaned before each build (`tools/libwallet-android.sh:31-32`):
+
+```bash
+rm -rf "$GOCACHE"/src-android-* 2>/dev/null \
+  || echo "No src-android-* directories found in GOCACHE."
+```
+
+#### 4. Configure Page Size Alignment
+
+For Android targetSdk 35+, 16KB page alignment is required (`tools/libwallet-android.sh:50`):
+
+```bash
+export CGO_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+```
+
+<Note>
+Android 15 (API 35+) introduces 16KB page size support. These linker flags ensure the compiled library is compatible with devices using larger page sizes.
+</Note>
+
+**Linker Flags Explained:**
+
+- `-Wl,-z,max-page-size=16384`: Sets maximum page size to 16KB
+- `-Wl,-z,common-page-size=16384`: Aligns data sections to 16KB boundaries
+- Both `CGO_LDFLAGS` and `LDFLAGS` are set for compatibility across build scenarios
+
+#### 5. Run Gomobile Bind
+
+Finally, the script generates the Android AAR (`tools/libwallet-android.sh:56-60`):
+
+```bash
+go run golang.org/x/mobile/cmd/gomobile bind \
+    -target="android" -o "$libwallet" \
+    -androidapi 19 \
+    -trimpath -ldflags="-buildid=. -v" \
+    . ./newop ./app_provided_data ./libwallet_init
+```
+
+**Build Flags:**
+
+- `-target="android"`: Generate Android bindings
+- `-androidapi 19`: Minimum API level (Android 4.4)
+- `-trimpath`: Remove absolute paths for reproducible builds
+- `-ldflags="-buildid=. -v"`: Consistent build IDs for reproducibility
+- Multiple packages: `libwallet`, `newop`, `app_provided_data`, `libwallet_init`
+
+<Info>
+The build binds multiple packages to provide different functional areas to the mobile app.
+</Info>
+
+### Build Output
+
+The Android build produces `libwallet.aar` at:
+
+```
+android/libwallet/libs/libwallet.aar
+```
+
+This AAR contains:
+
+- Compiled native libraries for all Android architectures (arm, arm64, x86, x86_64)
+- Java/Kotlin binding classes
+- Metadata and manifest files
+
+## Reproducible Builds
+
+Muun prioritizes reproducible builds for security and transparency:
+
+### Key Techniques
+
+1. **Trimmed Paths**: `-trimpath` removes machine-specific absolute paths
+2. **Consistent Build IDs**: `-ldflags="-buildid=."` ensures identical builds
+3. **Vendor Dependencies**: Using `go build -mod=vendor` locks dependencies
+4. **Cache Management**: Shared build caches prevent inconsistencies
+
+```bash
+# Reproducible build command
+go build -mod=vendor -trimpath -ldflags="-buildid=." .
+```
+
+<Note>
+Reproducible builds allow independent verification that published binaries match the source code.
+</Note>
+
+## Integration with Mobile Apps
+
+### Android Integration
+
+1. Add the AAR to your Android project:
+
+```gradle
+dependencies {
+    implementation files('libs/libwallet.aar')
+}
+```
+
+2. Import and use libwallet classes:
+
+```kotlin
+import libwallet.Libwallet
+import libwallet.StringList
+
+// Initialize libwallet
+val config = AppProvidedData.Config()
+Libwallet.init(config)
+
+// Use bridge types
+val addresses = StringList()
+addresses.add("bc1q...")
+```
+
+### iOS Integration
+
+For iOS, gomobile generates a `.framework` bundle:
+
+```bash
+gomobile bind -target=ios -o Libwallet.framework \
+    . ./newop ./app_provided_data ./libwallet_init
+```
+
+Then import in Swift:
+
+```swift
+import Libwallet
+
+// Initialize and use
+let config = AppProvidedDataConfig()
+LibwalletInit(config)
+```
+
+## Build Caching
+
+The build scripts use strategic caching to improve performance:
+
+```bash
+build_dir="$repo_root/libwallet/.build"
+
+# Separate caches for different stages
+GOMODCACHE="$build_dir/pkg"      # Go module cache
+GOCACHE="$build_dir/android"     # Build artifact cache
+```
+
+<Info>
+Caching can reduce rebuild times from minutes to seconds when only Go code changes.
+</Info>
+
+## Cross-Platform Packages
+
+Libwallet binds multiple packages for different concerns:
+
+### Core Package (`libwallet`)
+
+Main wallet functionality:
+
+- Transaction building and signing
+- Key management
+- Address generation
+- Submarine swaps
+
+### NewOp Package (`newop`)
+
+New operation handling:
+
+- Fee calculation
+- Exchange rates
+- Payment state management
+
+### App-Provided Data (`app_provided_data`)
+
+Platform-specific configuration:
+
+- Network settings
+- Storage paths
+- Platform capabilities
+
+### Initialization (`libwallet_init`)
+
+Library initialization and configuration.
+
+## Debugging Build Issues
+
+### Common Problems
+
+**Build fails with "file exists" error:**
+
+```bash
+# Clean temporary directories
+rm -rf "$GOCACHE"/src-android-*
+```
+
+**Missing gomobile command:**
+
+```bash
+# Reinstall gomobile
+go install golang.org/x/mobile/cmd/gomobile@latest
+go install golang.org/x/mobile/cmd/gobind@latest
+```
+
+**Rust libraries not found:**
+
+```bash
+# Build Rust dependencies first
+cd libwallet/librs
+./makelibs.sh
+```
+
+<Note>
+Always ensure Rust libraries are built before attempting to build libwallet with gomobile.
+</Note>
+
+## Performance Considerations
+
+### Build Time Optimization
+
+- Use build caches (`GOCACHE`, `GOMODCACHE`)
+- Parallelize independent builds
+- Only rebuild when necessary
+
+### Runtime Performance
+
+Gomobile adds some overhead:
+
+- Cross-language calls have marshaling cost
+- Batch operations when possible
+- Keep complex logic in Go layer
+- Use native types internally, bridge types only at boundaries
+
+## Version Management
+
+Gomobile version is pinned in `go.mod`:
+
+```bash
+# Use the version specified in go.mod
+go run golang.org/x/mobile/cmd/gomobile bind ...
+```
+
+This ensures consistent behavior across different development environments and build machines.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Libwallet Overview" icon="book" href="/api/overview">
+    Learn about libwallet's core functionality
+  </Card>
+  <Card title="Gomobile Docs" icon="external-link" href="https://godoc.org/golang.org/x/mobile/cmd/gomobile">
+    Official gomobile documentation
+  </Card>
+</CardGroup>

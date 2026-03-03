@@ -1,0 +1,265 @@
+---
+title: Biometric authentication
+description: Fingerprint and face recognition support for secure, convenient wallet access
+---
+
+## Overview
+
+Muun Wallet supports biometric authentication as a convenient alternative to PIN entry for unlocking the app. Added in version 55.4, biometric support leverages Android's BiometricPrompt API to provide secure, hardware-backed authentication.
+
+## Supported biometric types
+
+Muun supports all biometric types available through Android BiometricPrompt:
+
+- **Fingerprint recognition** (most common)
+- **Face recognition** (Android 10+)
+- **Iris scanning** (on supported devices)
+
+The specific biometric methods available depend on device hardware and Android version.
+
+<Info>
+Biometric authentication requires Android 6.0 (API level 23) or higher, with hardware support for at least one biometric type.
+</Info>
+
+## How it works
+
+### Authentication flow
+
+1. **User enables biometrics** in app settings
+2. **Sensitive data encrypted** with biometric-protected key
+3. **On app unlock**: BiometricPrompt shown
+4. **Biometric verified** by Android system
+5. **Decryption key released** by Android Keystore
+6. **App unlocked** with decrypted credentials
+
+### Security model
+
+Biometric authentication in Muun provides:
+
+- **Hardware-backed security**: Keys stored in Trusted Execution Environment (TEE) or Secure Enclave
+- **Fallback to PIN**: Users can always fall back to 4 or 6-digit PIN
+- **No plaintext storage**: PIN never stored unencrypted on device
+- **Timeout protection**: Biometrics disabled after extended inactivity
+
+<Warning>
+**Important**: Biometrics unlock the app but do not replace your PIN for transaction signing or recovery operations.
+</Warning>
+
+## Implementation details
+
+### BiometricsController interface
+
+The wallet implements biometric authentication through the `BiometricsController`:
+
+```kotlin BiometricsController.kt
+interface BiometricsController {
+    fun authenticate(
+        activity: FragmentActivity,
+        onSuccess: () -> Unit,
+        onError: (BiometricsAuthenticationStatus) -> Unit
+    )
+    
+    fun isAvailable(): Boolean
+    fun isEnabled(): Boolean
+    fun setEnabled(enabled: Boolean)
+}
+```
+
+### Authentication status
+
+Authentication can result in various statuses:
+
+```kotlin BiometricsAuthenticationStatus.kt
+enum class BiometricsAuthenticationStatus {
+    SUCCESS,
+    FAILURE,
+    CANCELLED,
+    ERROR,
+    LOCKOUT,
+    PERMANENT_LOCKOUT,
+    NOT_AVAILABLE,
+    NOT_ENROLLED
+}
+```
+
+**Status meanings:**
+
+- `SUCCESS`: Biometric verified successfully
+- `FAILURE`: Biometric not recognized (retry allowed)
+- `CANCELLED`: User cancelled the prompt
+- `ERROR`: System error occurred
+- `LOCKOUT`: Temporarily locked after too many attempts
+- `PERMANENT_LOCKOUT`: Biometric authentication disabled (requires device unlock)
+- `NOT_AVAILABLE`: No biometric hardware on device
+- `NOT_ENROLLED`: No biometrics enrolled in device settings
+
+### Integration with Android BiometricPrompt
+
+Muun uses Android's `BiometricPrompt` API:
+
+```kotlin
+val promptInfo = BiometricPrompt.PromptInfo.Builder()
+    .setTitle("Unlock Muun")
+    .setSubtitle("Verify your identity")
+    .setNegativeButtonText("Use PIN")
+    .setAllowedAuthenticators(
+        BiometricManager.Authenticators.BIOMETRIC_STRONG
+    )
+    .build()
+
+val biometricPrompt = BiometricPrompt(
+    activity,
+    executor,
+    authenticationCallback
+)
+
+biometricPrompt.authenticate(promptInfo)
+```
+
+<Note>
+Muun requires `BIOMETRIC_STRONG` authenticators, which provides the highest security level and is backed by hardware security.
+</Note>
+
+## User experience
+
+### Enabling biometrics
+
+<Steps>
+  <Step title="Open settings">
+    Navigate to **Settings** → **Security** in the Muun app
+  </Step>
+  
+  <Step title="Enable biometric unlock">
+    Toggle **Biometric unlock** option
+  </Step>
+  
+  <Step title="Verify biometric">
+    Authenticate with fingerprint or face to confirm setup
+  </Step>
+  
+  <Step title="Set PIN fallback">
+    Ensure you remember your PIN for fallback access
+  </Step>
+</Steps>
+
+### Using biometrics
+
+When biometrics are enabled:
+
+1. Open Muun app
+2. Biometric prompt appears automatically
+3. Authenticate with fingerprint/face
+4. App unlocks immediately on success
+
+If biometric authentication fails:
+- **Try again**: Most devices allow 5 attempts
+- **Use PIN**: Tap "Use PIN" to enter PIN manually
+- **Wait for timeout**: Temporary lockout lifts after 30 seconds
+
+## Security considerations
+
+### When to use biometrics
+
+**Good use cases:**
+- Convenient daily app access
+- Quick balance checks
+- Frequent small transactions
+
+**Not recommended for:**
+- Shared devices (use PIN only)
+- Maximum security scenarios (disable biometrics)
+- Devices with weak biometric sensors
+
+### Biometric data privacy
+
+<Info>
+**Privacy guarantee**: Biometric data (fingerprints, face scans) never leaves the device's secure hardware. Muun never receives or stores biometric data.
+</Info>
+
+Biometric templates are:
+- Stored in hardware-protected storage (TEE/Secure Enclave)
+- Encrypted and inaccessible to apps
+- Never transmitted over network
+- Deleted when biometric enrollment is removed
+
+### Fallback and recovery
+
+Always maintain PIN access:
+- Biometric hardware can fail
+- Injuries may prevent biometric authentication  
+- Device software updates may reset biometrics
+- Emergency access requires PIN
+
+<Warning>
+**Critical**: Never forget your PIN. Biometric authentication is a convenience feature that supplements but does not replace PIN security.
+</Warning>
+
+## Troubleshooting
+
+### Biometric option not available
+
+**Cause**: Device doesn't support biometric authentication
+
+**Solution**: 
+- Check device specifications for biometric hardware
+- Update Android to latest version
+- Enroll fingerprints/face in device settings
+
+### Authentication always fails
+
+**Cause**: Biometric template has degraded or hardware issue
+
+**Solution**:
+1. Re-enroll biometrics in device settings
+2. Clean fingerprint sensor or camera
+3. Use PIN as fallback
+4. Contact device manufacturer if problem persists
+
+### Biometrics disabled after update
+
+**Cause**: App or OS update reset biometric keys
+
+**Solution**:
+1. Re-enable biometrics in Muun settings
+2. Verify biometric authentication
+3. Test unlock before closing settings
+
+## Best practices
+
+### For users
+
+1. **Enroll multiple fingerprints**: Use 2-3 fingers for reliability
+2. **Keep sensors clean**: Dirty sensors cause authentication failures
+3. **Remember your PIN**: Always have fallback access
+4. **Disable on shared devices**: Use PIN-only on devices others can access
+5. **Update biometrics**: Re-enroll if authentication becomes unreliable
+
+### For developers
+
+1. **Handle all error cases**: Gracefully handle lockouts and errors
+2. **Provide clear prompts**: Explain what biometric authentication unlocks
+3. **Test edge cases**: Lockouts, cancellations, not enrolled scenarios
+4. **Respect user choice**: Allow disabling biometrics anytime
+5. **Implement rate limiting**: Prevent brute force attempts
+
+## Version history
+
+- **v55.4 (January 2026)**: Biometric authentication support added
+- **v55.3 (October 2025)**: Foundation work for biometric integration
+
+## Related documentation
+
+<CardGroup cols={2}>
+  <Card title="Key Management" icon="key" href="/security/key-management">
+    HD key management system
+  </Card>
+  <Card title="PIN Security" icon="lock" href="/security/challenge-keys">
+    Challenge keys and PIN system
+  </Card>
+  <Card title="Auditing" icon="shield-check" href="/security/auditing">
+    Security audit guidelines
+  </Card>
+  <Card title="Changelog" icon="timeline" href="/reference/changelog">
+    Full version history
+  </Card>
+</CardGroup>

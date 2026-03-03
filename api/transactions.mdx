@@ -1,0 +1,398 @@
+---
+title: 'Transaction Creation'
+description: 'Transaction signing and verification for Bitcoin'
+icon: 'arrows-rotate'
+---
+
+## Overview
+
+The transaction module provides comprehensive Bitcoin transaction creation, signing, and verification capabilities. It supports multiple address versions, submarine swaps, incoming swaps, and both partial and full signing workflows.
+
+## PartiallySignedTransaction
+
+Represents a transaction with inputs that need user signatures.
+
+```go
+type PartiallySignedTransaction struct {
+    tx     *wire.MsgTx
+    inputs []Input
+    nonces *MusigNonces
+}
+```
+
+## NewPartiallySignedTransaction
+
+Creates a new partially signed transaction from inputs and raw transaction bytes.
+
+```go
+func NewPartiallySignedTransaction(
+    inputs *InputList,
+    rawTx []byte,
+    userNonces *MusigNonces,
+) (*PartiallySignedTransaction, error)
+```
+
+<ParamField path="inputs" type="*InputList" required>
+  List of transaction inputs with signing data
+</ParamField>
+
+<ParamField path="rawTx" type="[]byte" required>
+  Serialized unsigned transaction
+</ParamField>
+
+<ParamField path="userNonces" type="*MusigNonces" required>
+  MuSig2 nonces for taproot (V5/V6) inputs
+</ParamField>
+
+**Returns:** `*PartiallySignedTransaction`  
+**Errors:** Transaction deserialization errors
+
+### Example
+
+```go
+// Create input list
+inputs := &InputList{}
+inputs.Add(myInput)
+
+// Parse transaction
+pst, err := NewPartiallySignedTransaction(inputs, rawTxBytes, nonces)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Sign
+
+Signs the transaction with the user's private key. Muun's signature must already be present in inputs.
+
+```go
+func (p *PartiallySignedTransaction) Sign(
+    userKey *HDPrivateKey,
+    muunKey *HDPublicKey,
+) (*Transaction, error)
+```
+
+<ParamField path="userKey" type="*HDPrivateKey" required>
+  User's HD private key for signing
+</ParamField>
+
+<ParamField path="muunKey" type="*HDPublicKey" required>
+  Muun's HD public key for multisig validation
+</ParamField>
+
+**Returns:** `*Transaction` - Fully signed transaction  
+**Errors:** Signing errors, missing Muun signature
+
+### Example
+
+```go
+// Sign transaction (Muun signature already in inputs)
+tx, err := pst.Sign(userKey, muunPublicKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Transaction hash: %s\n", tx.Hash)
+fmt.Printf("Raw bytes: %x\n", tx.Bytes)
+```
+
+## FullySign
+
+Signs the transaction with both user and Muun private keys. Used for emergency recovery.
+
+```go
+func (p *PartiallySignedTransaction) FullySign(
+    userKey, muunKey *HDPrivateKey,
+) (*Transaction, error)
+```
+
+<ParamField path="userKey" type="*HDPrivateKey" required>
+  User's HD private key
+</ParamField>
+
+<ParamField path="muunKey" type="*HDPrivateKey" required>
+  Muun's HD private key (emergency recovery only)
+</ParamField>
+
+**Returns:** `*Transaction` - Fully signed transaction  
+**Errors:** Signing errors
+
+<Warning>
+This method requires Muun's private key and should only be used for emergency recovery scenarios.
+</Warning>
+
+### Example
+
+```go
+// Emergency recovery: sign with both keys
+tx, err := pst.FullySign(userKey, muunKey)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Verify
+
+Verifies the transaction matches expected parameters before signing.
+
+```go
+func (p *PartiallySignedTransaction) Verify(
+    expectations *SigningExpectations,
+    userPublicKey *HDPublicKey,
+    muunPublicKey *HDPublicKey,
+) error
+```
+
+<ParamField path="expectations" type="*SigningExpectations" required>
+  Expected transaction parameters (destination, amount, fee, change)
+</ParamField>
+
+<ParamField path="userPublicKey" type="*HDPublicKey" required>
+  User's public key for change address validation
+</ParamField>
+
+<ParamField path="muunPublicKey" type="*HDPublicKey" required>
+  Muun's public key for change address validation
+</ParamField>
+
+**Returns:** `error` if verification fails  
+**Validates:**
+- Output count (destination + optional change)
+- Destination address and amount
+- Change address ownership and derivation
+- Fee calculation
+- No dust outputs being burned as fees
+
+### Example
+
+```go
+// Create expectations
+expectations := NewSigningExpectations(
+    "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", // destination
+    100000,      // amount in sats
+    changeAddr,  // change address
+    5000,        // fee in sats
+    false,       // not alternative
+)
+
+// Verify before signing
+err := pst.Verify(expectations, userPub, muunPub)
+if err != nil {
+    log.Fatalf("Transaction verification failed: %v", err)
+}
+```
+
+## SigningExpectations
+
+Defines the expected parameters for transaction verification.
+
+```go
+type SigningExpectations struct {
+    destination string
+    amount      int64
+    change      MuunAddress
+    fee         int64
+    alternative bool
+}
+```
+
+### NewSigningExpectations
+
+```go
+func NewSigningExpectations(
+    destination string,
+    amount int64,
+    change MuunAddress,
+    fee int64,
+    alternative bool,
+) *SigningExpectations
+```
+
+<ParamField path="destination" type="string" required>
+  Expected destination address
+</ParamField>
+
+<ParamField path="amount" type="int64" required>
+  Expected amount in satoshis
+</ParamField>
+
+<ParamField path="change" type="MuunAddress">
+  Expected change address (nil if no change)
+</ParamField>
+
+<ParamField path="fee" type="int64" required>
+  Expected fee in satoshis
+</ParamField>
+
+<ParamField path="alternative" type="bool">
+  Whether this is an alternative transaction (fee bump)
+</ParamField>
+
+## Input Interfaces
+
+The Input interface provides access to input data for signing.
+
+```go
+type Input interface {
+    OutPoint() Outpoint
+    Address() MuunAddress
+    UserSignature() []byte
+    MuunSignature() []byte
+    SubmarineSwapV1() InputSubmarineSwapV1
+    SubmarineSwapV2() InputSubmarineSwapV2
+    IncomingSwap() InputIncomingSwap
+    MuunPublicNonce() []byte
+}
+```
+
+### Outpoint Interface
+
+```go
+type Outpoint interface {
+    TxId() []byte
+    Index() int
+    Amount() int64
+}
+```
+
+## InputList
+
+Container for managing transaction inputs.
+
+```go
+type InputList struct {
+    inputs []Input
+}
+```
+
+### Add
+
+```go
+func (l *InputList) Add(input Input)
+```
+
+<ParamField path="input" type="Input" required>
+  Input to add to the list
+</ParamField>
+
+### Example
+
+```go
+inputs := &InputList{}
+inputs.Add(input1)
+inputs.Add(input2)
+inputs.Add(input3)
+
+pst, err := NewPartiallySignedTransaction(inputs, rawTx, nonces)
+```
+
+## Transaction Structure
+
+The signed transaction result.
+
+```go
+type Transaction struct {
+    Hash  string  // Transaction ID (hex)
+    Bytes []byte  // Serialized transaction
+}
+```
+
+## Supported Address Versions
+
+The library supports signing for multiple address types:
+
+<CodeGroup>
+
+```go V1 (Legacy P2SH)
+// P2SH multisig (deprecated)
+case addresses.V1:
+    return &coinV1{...}
+```
+
+```go V2 (P2SH-P2WSH)
+// Nested segwit multisig
+case addresses.V2:
+    return &coinV2{...}
+```
+
+```go V3 (P2WSH)
+// Native segwit multisig
+case addresses.V3:
+    return &coinV3{...}
+```
+
+```go V4 (P2WSH)
+// Native segwit multisig v2
+case addresses.V4:
+    return &coinV4{...}
+```
+
+```go V5/V6 (Taproot)
+// MuSig2 taproot
+case addresses.V5:
+    return &coinV5{...}
+case addresses.V6:
+    return &coinV6{...}
+```
+
+```go Submarine Swaps
+// Submarine swap outputs
+case addresses.SubmarineSwapV1:
+    return &coinSubmarineSwapV1{...}
+case addresses.SubmarineSwapV2:
+    return &coinSubmarineSwapV2{...}
+```
+
+```go Incoming Swaps
+// Lightning to on-chain
+case addresses.IncomingSwap:
+    return &coinIncomingSwap{...}
+```
+
+</CodeGroup>
+
+## Security Validations
+
+The Verify method performs critical security checks:
+
+### Output Validation
+- Ensures exactly 1 or 2 outputs (destination + optional change)
+- Verifies destination address matches expectations
+- Confirms destination amount matches expectations
+
+### Change Address Security
+- Validates change address is owned by the wallet
+- Verifies proper key derivation from user and Muun keys
+- Checks change amount calculation (inputs - amount - fee)
+
+### Fee Protection
+- Prevents excessive fees
+- Ensures dust outputs aren't burned as fees (dust threshold: 546 sats)
+- Validates fee matches expected value
+
+### Alternative Transaction Handling
+For fee bumps (RBF), allows:
+- Reduced destination amount
+- Missing destination output if change present
+- Adjusted fee expectations
+
+<Note>
+Segwit inputs (V3+) include the input amount in the signature data, preventing amount manipulation attacks.
+</Note>
+
+## Constants
+
+```go
+const dustThreshold = 546 // Minimum output value in satoshis
+```
+
+## Error Scenarios
+
+Common errors during transaction operations:
+
+- **Signature verification failed**: Muun signature invalid
+- **Output mismatch**: Unexpected number of outputs
+- **Amount mismatch**: Destination or change amount incorrect
+- **Address mismatch**: Change address not owned by wallet
+- **Fee mismatch**: Calculated fee doesn't match expectations
+- **Dust as fee**: Change output below dust threshold

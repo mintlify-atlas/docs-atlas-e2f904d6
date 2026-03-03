@@ -1,122 +1,135 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Muun Wallet",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#1A6BFF",
+    "light": "#3D8BFF",
+    "dark": "#0052E3"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/muun/apollo"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/muun/apollo"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "requirements"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Architecture",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "architecture/overview",
+              "architecture/clean-architecture",
+              "architecture/data-layer",
+              "architecture/domain-layer",
+              "architecture/presentation-layer"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Core Features",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "features/multisig",
+              "features/lightning-network",
+              "features/submarine-swaps",
+              "features/security-cards",
+              "features/emergency-kit",
+              "features/recovery"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Building & Development",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "development/building-locally",
+              "development/reproducible-builds",
+              "development/verification",
+              "development/testing"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/key-management",
+              "security/challenge-keys",
+              "security/biometrics",
+              "security/auditing"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Libwallet API",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Overview",
             "pages": [
-              "api-reference/introduction"
+              "api/overview",
+              "api/gomobile-integration"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Core APIs",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/addresses",
+              "api/transactions",
+              "api/invoices",
+              "api/submarine-swaps"
+            ]
+          },
+          {
+            "group": "Key Management",
+            "pages": [
+              "api/hdkeys",
+              "api/encryption",
+              "api/challenge-keys"
+            ]
+          },
+          {
+            "group": "Protocols",
+            "pages": [
+              "api/bip21",
+              "api/lnurl",
+              "api/musig2"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/wallet-service",
+              "api/diagnostic-mode",
+              "api/storage"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Resources",
+            "pages": [
+              "reference/changelog",
+              "reference/contributing",
+              "reference/responsible-disclosure"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

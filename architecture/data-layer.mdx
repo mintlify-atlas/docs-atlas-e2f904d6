@@ -1,0 +1,561 @@
+---
+title: 'Data Layer'
+description: 'Deep dive into Muun Wallet data layer: database, network, and OS backends'
+---
+
+## Overview
+
+The data layer (`io.muun.apollo.data`) is responsible for all interactions with external data sources and the operating system. It acts as the gateway between the domain layer and the outside world.
+
+<Note>
+The data layer has no upward dependencies. It doesn't know about domain business logic or presentation components.
+</Note>
+
+## Layer Structure
+
+The data layer is organized into specialized subdirectories:
+
+```
+data/
+├── db/               # Database (SQLite with SqlDelight)
+├── net/              # Network communication (Houston API)
+├── preferences/      # SharedPreferences repositories
+├── os/               # Operating system integrations
+├── fs/               # File system operations
+├── apis/             # External APIs (Google Drive)
+├── async/            # Background tasks and workers
+├── afs/              # Analytics and metrics providers
+├── external/         # External service integrations
+├── libwallet/        # Wallet library bindings
+├── nfc/              # NFC hardware access
+├── serialization/    # Data serialization utilities
+└── logging/          # Logging infrastructure
+```
+
+## Database Layer
+
+### Technology Stack
+
+Muun uses a combination of technologies for database management:
+
+- **SQLite**: Core database engine
+- **SqlDelight**: Type-safe SQL query generation
+- **SqlBrite**: Reactive wrapper providing RxJava observables
+- **Room** (minimal): Some legacy DAO patterns
+
+### DaoManager: Central Database Hub
+
+The `DaoManager` coordinates all database operations:
+
+```java
+public class DaoManager {
+    private final BaseDao[] daos;
+    private final BriteDatabase database;
+    private final Database delightDb;
+    private final DbMigrationManager dbMigrationManager;
+
+    public DaoManager(
+            Context context,
+            String name,
+            int version,
+            Scheduler scheduler,
+            BaseDao... daos
+    ) {
+        // Initialize SqlBrite wrapper
+        final SqlBrite sqlBrite = new SqlBrite.Builder().build();
+        
+        // Setup database with migrations
+        this.database = sqlBrite.wrapDatabaseHelper(helper, scheduler);
+        this.delightDb = Database.Companion.invoke(...);
+        
+        initializeDaos();
+    }
+}
+```
+
+Example from: `data/db/DaoManager.java:34`
+
+<Tip>
+All DAOs are initialized through `DaoManager`, ensuring consistent database access patterns and proper transaction handling.
+</Tip>
+
+### DAO Pattern
+
+Data Access Objects provide type-safe database operations:
+
+**Key DAOs**:
+- `ContactDao`: Contact management
+- `OperationDao`: Transaction history
+- `IncomingSwapDao`: Lightning swap data
+- `SubmarineSwapDao`: Submarine swap data
+
+**Base DAO Structure**:
+
+```java
+public abstract class BaseDao {
+    protected BriteDatabase db;
+    protected Database delightDb;
+    protected Scheduler scheduler;
+
+    public void setDb(BriteDatabase db, Database delightDb, Scheduler scheduler) {
+        this.db = db;
+        this.delightDb = delightDb;
+        this.scheduler = scheduler;
+    }
+
+    public abstract Completable deleteAll();
+}
+```
+
+### Database Migrations
+
+`DbMigrationManager` handles schema changes:
+
+```java
+public class DbMigrationManager {
+    public void run(SupportSQLiteDatabase db, int oldVersion, int newVersion) {
+        // Execute migrations between versions
+    }
+}
+```
+
+Example from: `data/db/DaoManager.java:121`
+
+<Info>
+Database migrations are critical for maintaining user data across app updates. Each migration is carefully tested to prevent data loss.
+</Info>
+
+### Reactive Queries with RxJava
+
+SqlBrite provides reactive database queries:
+
+```java
+// Example: Observing database changes
+Observable<List<Operation>> watchOperations() {
+    return db.createQuery(OPERATIONS_TABLE, SELECT_ALL)
+        .mapToList(cursor -> mapFromCursor(cursor));
+}
+```
+
+Benefits:
+- UI automatically updates when data changes
+- No manual refresh needed
+- Consistent with other async operations
+
+## Network Layer
+
+### HoustonClient: API Communication
+
+The `HoustonClient` is the main interface to Muun's backend (Houston):
+
+```java
+public class HoustonClient extends BaseClient<HoustonService> {
+    private final ModelObjectsMapper modelMapper;
+    private final ApiObjectsMapper apiMapper;
+    private final Context context;
+    private final MetricsProvider metricsProvider;
+
+    @Inject
+    public HoustonClient(
+            ModelObjectsMapper modelMapper,
+            ApiObjectsMapper apiMapper,
+            Context context,
+            MetricsProvider metricsProvider
+    ) {
+        super(HoustonService.class);
+        this.modelMapper = modelMapper;
+        this.apiMapper = apiMapper;
+        // ...
+    }
+}
+```
+
+Example from: `data/net/HoustonClient.java:107`
+
+### API Methods
+
+`HoustonClient` provides methods for all backend operations:
+
+```java
+// Session management
+public Observable<CreateFirstSessionOk> createFirstSession(...);
+public Observable<CreateSessionOk> createLoginSession(...);
+
+// User operations
+public Observable<User> fetchUser();
+public Observable<User> updateUsername(String firstName, String lastName);
+
+// Transaction operations  
+public Observable<OperationCreated> newOperation(...);
+public Observable<TransactionPushed> pushTransactions(...);
+
+// Lightning operations
+public Observable<SubmarineSwap> createSubmarineSwap(SubmarineSwapRequest request);
+```
+
+Example from: `data/net/HoustonClient.java:139-700`
+
+### Object Mapping
+
+Two mapper classes handle conversion between API and domain models:
+
+**ApiObjectsMapper**: Domain → API JSON
+```java
+// Converts domain models to API request objects
+CreateFirstSessionJson mapCreateFirstSession(...);
+OperationJson mapOperation(...);
+```
+
+**ModelObjectsMapper**: API JSON → Domain
+```java
+// Converts API responses to domain models
+User mapUser(UserJson json);
+Operation mapOperation(OperationJson json);
+```
+
+<Note>
+Separating mapping logic keeps domain models clean and independent of API structure. API changes don't require domain model changes.
+</Note>
+
+### Error Handling
+
+Network errors are transformed into domain-specific exceptions:
+
+```java
+return getService()
+    .createSubmarineSwap(apiMapper.mapSubmarineSwapRequest(request))
+    .compose(ObservableFn.replaceHttpException(
+        ErrorCode.INVALID_INVOICE,
+        e -> new InvalidInvoiceException(request.invoice, e)
+    ))
+    .compose(ObservableFn.replaceHttpException(
+        ErrorCode.INVOICE_EXPIRED,
+        e -> new InvoiceExpiredException(request.invoice, e)
+    ))
+    .map(modelMapper::mapSubmarineSwap);
+```
+
+Example from: `data/net/HoustonClient.java:660`
+
+### Retrofit Service Interface
+
+`HoustonService` defines API endpoints using Retrofit annotations:
+
+```java
+public interface HoustonService {
+    @POST("sessions/first")
+    Observable<CreateFirstSessionOkJson> createFirstSession(@Body CreateFirstSessionJson session);
+    
+    @POST("operations")
+    Observable<OperationCreatedJson> newOperation(@Body OperationJson operation);
+    
+    @GET("users/me")
+    Observable<UserJson> fetchUserInfo();
+}
+```
+
+## Preferences Layer
+
+The preferences layer manages app settings and cached data using SharedPreferences:
+
+**Repository Pattern**:
+```
+preferences/
+├── AuthRepository          # Authentication state
+├── UserRepository          # User data cache
+├── OperationRepository     # Transaction cache
+├── FeeRepository           # Fee estimation cache
+└── stored/                 # Stored value objects
+```
+
+**Example Repository**:
+```java
+public class AuthRepository extends BaseRepository {
+    public void storeSessionStatus(SessionStatus status) {
+        preferences.edit()
+            .putString(KEY_SESSION_STATUS, status.name())
+            .apply();
+    }
+    
+    public Optional<SessionStatus> getSessionStatus() {
+        String value = preferences.getString(KEY_SESSION_STATUS, null);
+        return Optional.ofNullable(value)
+            .map(SessionStatus::valueOf);
+    }
+}
+```
+
+<Tip>
+Repositories provide a type-safe API over SharedPreferences, preventing common errors like key typos or type mismatches.
+</Tip>
+
+## Operating System Integrations
+
+The `os` package contains Android OS integrations:
+
+```
+os/
+├── ClipboardProvider        # Clipboard access
+├── ContactsProvider         # Contact list access
+├── KeyStoreProvider         # Android KeyStore
+├── SecureStorageProvider    # Encrypted storage
+├── TelephonyInfoProvider    # Phone state
+└── BiometricProvider        # Fingerprint/Face auth
+```
+
+### Secure Storage
+
+Critical data is stored using Android's secure storage:
+
+```java
+public class SecureStorageProvider {
+    // Store encrypted keys
+    public void store(String key, byte[] data);
+    
+    // Retrieve and decrypt
+    public byte[] get(String key);
+    
+    // Uses Android KeyStore for encryption keys
+}
+```
+
+<Warning>
+**Security Critical**: The KeyStore and SecureStorage providers handle cryptographic keys. Any changes to these components require careful security review.
+</Warning>
+
+## File System Operations
+
+The `fs` package manages file operations:
+
+```java
+fs/
+├── FileManager              # File CRUD operations
+└── CacheManager             # Cache management
+```
+
+**Use Cases**:
+- Emergency kit PDF export
+- Debug log storage
+- Temporary file management
+
+## External APIs
+
+The `apis` package integrates external services:
+
+### Google Drive Integration
+
+```java
+apis/
+├── DriveAuthenticator       # OAuth authentication
+├── DriveImpl                # Drive API client
+├── DriveUploader            # File upload logic
+├── DriveFile                # File representation
+└── DriveError               # Error handling
+```
+
+**Used for**: Emergency kit backup to Google Drive
+
+## Background Tasks
+
+The `async` package manages background operations:
+
+```
+async/
+├── gcm/
+│   └── GcmMessageListenerService    # Push notifications
+└── tasks/
+    ├── TaskScheduler                 # WorkManager integration
+    ├── TaskDispatcher                # Task routing
+    ├── PeriodicTaskWorker            # Periodic sync
+    └── MuunWorkerFactory             # Worker creation
+```
+
+### Push Notifications
+
+```java
+public class GcmMessageListenerService 
+        extends FirebaseMessagingService {
+    
+    @Override
+    public void onMessageReceived(RemoteMessage message) {
+        // Handle incoming notification
+        // Trigger data sync
+    }
+}
+```
+
+### Periodic Tasks
+
+Using Android WorkManager for reliable background sync:
+
+```java
+public class PeriodicTaskWorker extends Worker {
+    @Override
+    public Result doWork() {
+        // Sync data with Houston
+        // Update exchange rates
+        // Check for incoming payments
+        return Result.success();
+    }
+}
+```
+
+## Analytics and Metrics
+
+The `afs` package provides system metrics for analytics:
+
+```
+afs/
+├── AppInfoProvider          # App version, install time
+├── BuildInfoProvider        # Device build information
+├── BatteryInfoProvider      # Battery state
+├── ConnectivityInfoProvider # Network status
+└── SystemInfoProvider       # System properties
+```
+
+These providers collect non-sensitive device information for debugging and analytics.
+
+## NFC Support
+
+The `nfc` package handles hardware wallet integration:
+
+```java
+nfc/
+├── NfcManager               # NFC session management
+├── CardReader               # Hardware wallet communication
+└── ApduCommands             # NFC command protocol
+```
+
+## Data Flow Example
+
+Let's trace a complete data flow for fetching user operations:
+
+```
+1. Presentation Layer
+   ↓ calls
+2. Domain Layer (OperationActions)
+   ↓ calls
+3. Data Layer (OperationRepository)
+   ↓ queries
+4. Database (OperationDao)
+   ↓ also calls
+5. Network (HoustonClient)
+   ↓ syncs with
+6. Backend (Houston API)
+```
+
+**Step-by-step**:
+
+```java
+// 1. Presenter requests operations
+presenter.loadOperations();
+
+// 2. Domain action orchestrates
+operationActions.fetchOperations()
+    .subscribe(operations -> {
+        // Update UI
+    });
+
+// 3. Repository provides data
+operationRepository.getOperations()
+    // First check cache (database)
+    .mergeWith(fetchFromNetwork())
+    
+// 4. DAO queries SQLite
+operationDao.watchAll()
+    .map(this::toDomainModel)
+    
+// 5. Client fetches from API
+houstonClient.fetchOperations()
+    .doOnNext(operations -> {
+        // Save to database
+        operationDao.storeAll(operations);
+    })
+```
+
+<Info>
+This reactive pattern ensures the UI always shows cached data immediately while fresh data is fetched in the background.
+</Info>
+
+## Testing Data Layer
+
+### Unit Tests
+
+- Test repositories with mocked DAOs
+- Test DAOs with in-memory database
+- Test API clients with mocked Retrofit service
+
+### Integration Tests
+
+- Test database migrations
+- Test repository + DAO together
+- Test network client with mock server
+
+## Best Practices
+
+<Tip>
+**Data Layer Guidelines**
+
+1. **Single Responsibility**: Each repository handles one domain entity
+2. **Reactive Streams**: Use RxJava for all async operations
+3. **Error Mapping**: Convert technical errors to domain errors
+4. **Caching Strategy**: Cache in database, refresh from network
+5. **Type Safety**: Use SqlDelight for compile-time query validation
+</Tip>
+
+## Security Considerations
+
+<Warning>
+**Security Checklist for Data Layer**
+
+- ✅ All keys stored in Android KeyStore
+- ✅ Sensitive data encrypted at rest
+- ✅ Network traffic uses TLS
+- ✅ Certificate pinning for Houston API
+- ✅ No sensitive data in logs
+- ✅ SharedPreferences encrypted for sensitive values
+</Warning>
+
+## Common Patterns
+
+### Repository Pattern
+
+```java
+public class UserRepository extends BaseRepository {
+    private final UserDao dao;
+    private final HoustonClient client;
+    
+    public Observable<User> getUser() {
+        // Cache-first strategy
+        return dao.fetch()
+            .switchIfEmpty(client.fetchUser()
+                .doOnNext(dao::store));
+    }
+}
+```
+
+### RxJava Composition
+
+```java
+public Observable<List<Operation>> syncOperations() {
+    return client.fetchOperations()
+        .flatMap(operations -> 
+            dao.storeAll(operations)
+                .andThen(Observable.just(operations))
+        )
+        .onErrorResumeNext(error -> 
+            dao.fetchAll() // Fallback to cache
+        );
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Domain Layer" icon="code" href="/architecture/domain-layer">
+    See how domain layer uses data repositories
+  </Card>
+  <Card title="Clean Architecture" icon="layer-group" href="/architecture/clean-architecture">
+    Understand layer separation principles
+  </Card>
+</CardGroup>

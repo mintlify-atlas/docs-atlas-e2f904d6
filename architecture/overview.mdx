@@ -1,0 +1,168 @@
+---
+title: 'Architecture Overview'
+description: 'High-level overview of Muun Wallet architecture and design principles'
+---
+
+## Introduction
+
+Muun Wallet is a non-custodial 2-of-2 multisig Bitcoin wallet built with a strong focus on security and ease of use. The Android application follows the **Clean Architecture** pattern, ensuring clear separation of concerns and maintainability.
+
+<Note>
+The codebase is organized into distinct layers with well-defined responsibilities and dependencies that flow in one direction.
+</Note>
+
+## Three-Layer Architecture
+
+The application is structured into three main layers:
+
+```
+┌─────────────────────────────┐
+│    Presentation Layer       │  ← UI components, Activities, Fragments
+└─────────────────────────────┘
+              ↓
+┌─────────────────────────────┐
+│      Domain Layer           │  ← Business logic, Use Cases, Models
+└─────────────────────────────┘
+              ↓
+┌─────────────────────────────┐
+│       Data Layer            │  ← Database, Network, OS backends
+└─────────────────────────────┘
+```
+
+### Layer Responsibilities
+
+<Info>
+**Key Principle**: The presentation layer depends only on the domain layer and never references data directly. This ensures proper encapsulation and testability.
+</Info>
+
+1. **Data Layer** (`io.muun.apollo.data`)
+   - Handles all data backends: database, network, operating system
+   - Manages SQLite database via DAOs
+   - Network communication with Houston (Muun's backend)
+   - OS integrations (file system, preferences, NFC, etc.)
+
+2. **Domain Layer** (`io.muun.apollo.domain`)
+   - Contains business logic and use cases
+   - Defines domain models representing wallet entities
+   - Implements actions (use cases in clean architecture terminology)
+   - Houses cryptographic operations and transaction crafting
+
+3. **Presentation Layer** (`io.muun.apollo.presentation`)
+   - UI code: Activities, Fragments, Views
+   - Presenters implementing MVP pattern
+   - Only depends on domain layer
+   - Handles user interactions and displays data
+
+## Common Module
+
+In addition to the three main layers, there's a pure Java **common** module containing:
+
+- Shared utilities and extensions
+- Key handling operations
+- Transaction crafting logic
+- Code used across all layers
+
+<Tip>
+When auditing security-critical code, focus on these areas:
+- Key handling in the **common** module
+- Keystore and data handling in the **data** layer
+- Business logic decisions in the **domain** layer
+</Tip>
+
+## Dependency Flow
+
+Dependencies flow in one direction to maintain clean architecture principles:
+
+```
+Presentation → Domain → Data
+```
+
+- Presentation layer imports from domain
+- Domain layer imports from data
+- Data layer has no dependencies on other layers
+- All layers can import from common
+
+## Technology Stack
+
+### Core Technologies
+
+- **Language**: Java and Kotlin
+- **Database**: SQLite with SqlDelight and SqlBrite
+- **Networking**: Retrofit with RxJava
+- **Dependency Injection**: Dagger 2
+- **Reactive Programming**: RxJava
+- **UI**: Android Views with View Binding
+
+### Key Libraries
+
+- **SqlDelight**: Type-safe SQL queries
+- **SqlBrite**: Reactive wrapper for SQLite
+- **Retrofit**: HTTP client for API communication
+- **OkHttp**: Network transport layer
+- **RxJava**: Reactive streams and async operations
+- **Dagger**: Compile-time dependency injection
+
+## Module Structure
+
+```
+muun/apollo
+├── android/
+│   └── apolloui/
+│       └── src/main/java/io/muun/apollo/
+│           ├── data/          # Data layer
+│           ├── domain/        # Domain layer
+│           └── presentation/  # Presentation layer
+└── common/                    # Shared pure Java code
+```
+
+## Design Patterns
+
+### MVP (Model-View-Presenter)
+
+The presentation layer uses the MVP pattern:
+
+- **Model**: Domain models from the domain layer
+- **View**: Activities and Fragments implementing view interfaces
+- **Presenter**: Business logic coordinators that handle user interactions
+
+### Repository Pattern
+
+The data layer implements repositories that abstract data sources:
+
+- Repositories provide a clean API for data access
+- Handle data source coordination (network, database, cache)
+- Return RxJava Observables for reactive data streams
+
+### Use Case Pattern
+
+The domain layer uses "Actions" (use cases):
+
+- Each action represents a single business operation
+- Actions are implemented as `BaseAsyncAction` subclasses
+- Provide reactive streams via RxJava Observables
+
+<Info>
+Actions in Muun are the implementation of the Use Case pattern from clean architecture. They encapsulate business logic and orchestrate data layer operations.
+</Info>
+
+## Runtime Requirements
+
+- Android version 5.0 (API level 21) or higher
+- Google Play services
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Clean Architecture" icon="layer-group" href="/architecture/clean-architecture">
+    Deep dive into clean architecture principles
+  </Card>
+  <Card title="Data Layer" icon="database" href="/architecture/data-layer">
+    Explore data backends and persistence
+  </Card>
+  <Card title="Domain Layer" icon="code" href="/architecture/domain-layer">
+    Learn about business logic and models
+  </Card>
+  <Card title="Presentation Layer" icon="mobile" href="/architecture/presentation-layer">
+    Understand UI implementation
+  </Card>
+</CardGroup>

@@ -1,0 +1,737 @@
+---
+title: 'Domain Layer'
+description: 'Business logic, models, and use cases in Muun Wallet domain layer'
+---
+
+## Overview
+
+The domain layer (`io.muun.apollo.domain`) is the heart of Muun Wallet. It contains all business logic, domain models, and use cases. This layer is framework-independent and focuses purely on business rules.
+
+<Note>
+The domain layer depends on the data layer for data access but has no knowledge of Android framework classes or UI components.
+</Note>
+
+## Layer Structure
+
+```
+domain/
+├── action/              # Use cases (business operations)
+│   ├── base/            # Base action classes
+│   ├── address/         # Address generation actions
+│   ├── challenge_keys/  # Authentication actions
+│   ├── operation/       # Transaction actions
+│   ├── ContactActions   # Contact management
+│   ├── SigninActions    # Sign-in operations
+│   └── UserActions      # User management
+├── model/               # Domain models
+│   ├── user/            # User entity models
+│   ├── operation/       # Transaction models
+│   └── *.kt             # Other domain entities
+├── selector/            # Data selectors/queries
+├── errors/              # Domain-specific exceptions
+├── libwallet/           # Bitcoin wallet operations
+├── analytics/           # Analytics tracking
+├── sync/                # Data synchronization
+└── utils/               # Domain utilities
+```
+
+## Actions: The Use Case Pattern
+
+Actions are Muun's implementation of the Use Case pattern from clean architecture. Each action represents a single business operation.
+
+### Action Hierarchy
+
+```
+BaseAsyncAction
+├── BaseAsyncAction0     (no parameters)
+├── BaseAsyncAction1     (1 parameter)
+├── BaseAsyncAction2     (2 parameters)
+├── BaseAsyncAction3     (3 parameters)
+└── BaseAsyncAction4     (4 parameters)
+```
+
+### BaseAsyncAction1 Example
+
+```java
+public abstract class BaseAsyncAction1<T, R> extends BaseAsyncAction<R> {
+
+    public abstract Observable<R> action(T t);
+
+    public void run(T t) {
+        super.run(action(t));
+    }
+
+    public R actionNow(T t) {
+        return action(t).toBlocking().first();
+    }
+}
+```
+
+Example from: `domain/action/base/BaseAsyncAction1.java:5`
+
+<Tip>
+**Action Naming Convention**: Actions are grouped by feature (e.g., `SigninActions`, `OperationActions`) and contain related business operations.
+</Tip>
+
+### Synchronous Actions
+
+Simple actions that don't require async operations:
+
+```java
+@Singleton
+public class SigninActions {
+    private final AuthRepository authRepository;
+
+    @Inject
+    public SigninActions(AuthRepository authRepository) {
+        this.authRepository = authRepository;
+    }
+
+    public Optional<SessionStatus> getSessionStatus() {
+        return authRepository.getSessionStatus();
+    }
+
+    public void clearSession() {
+        authRepository.clearSession();
+    }
+
+    public void reportAuthorizedByEmail() {
+        authRepository.storeSessionStatus(SessionStatus.AUTHORIZED_BY_EMAIL);
+    }
+}
+```
+
+Example from: `domain/action/SigninActions.java:12`
+
+### Asynchronous Actions
+
+Complex operations that return RxJava Observables:
+
+```java
+public class CreateAddressAction extends BaseAsyncAction1<Void, String> {
+    private final AddressRepository addressRepository;
+    private final UserRepository userRepository;
+
+    @Inject
+    public CreateAddressAction(AddressRepository addressRepository,
+                                UserRepository userRepository) {
+        this.addressRepository = addressRepository;
+        this.userRepository = userRepository;
+    }
+
+    @Override
+    public Observable<String> action(Void params) {
+        return userRepository.getUser()
+            .flatMap(user -> addressRepository.generateNewAddress(user))
+            .doOnNext(address -> addressRepository.save(address));
+    }
+}
+```
+
+### Action State Management
+
+Actions can maintain state during execution:
+
+```java
+public class ActionState<T> {
+    public enum Kind {
+        LOADING,
+        VALUE,
+        ERROR,
+        EMPTY
+    }
+
+    private final Kind kind;
+    private final T value;
+    private final Throwable error;
+}
+```
+
+Example from: `domain/action/base/ActionState.java`
+
+<Info>
+Action state allows UI to react to loading, success, error, and empty states consistently across all operations.
+</Info>
+
+## Domain Models
+
+Domain models represent core business entities. They are pure Java/Kotlin classes with no Android dependencies.
+
+### User Model
+
+```java
+public class User {
+    @NotNull
+    public final Long hid;
+
+    @NotNull
+    public Optional<String> email;
+    public boolean isEmailVerified;
+
+    public final Optional<UserPhoneNumber> phoneNumber;
+    public final Optional<UserProfile> profile;
+
+    private final CurrencyUnit primaryCurrency;
+
+    public boolean hasRecoveryCode;
+    public boolean hasPassword;
+    public final boolean hasP2PEnabled;
+
+    public Optional<EmergencyKit> emergencyKit;
+
+    @NotNull
+    public final SortedSet<Integer> emergencyKitVersions;
+
+    @Since(apolloVersion = 46)
+    public final Optional<ZonedDateTime> createdAt;
+
+    // Factory method for Houston data
+    public static User fromHouston(@NotNull Long hid,
+                                   Optional<String> email,
+                                   boolean isEmailVerified,
+                                   // ... more parameters
+    ) {
+        return new User(...);
+    }
+}
+```
+
+Example from: `domain/model/user/User.java:18`
+
+### Operation Model
+
+Represents a Bitcoin transaction:
+
+```java
+public class Operation {
+    public final Long id;
+    public final String txId;
+    public final MonetaryAmount amount;
+    public final MonetaryAmount fee;
+    public final String address;
+    public final Direction direction;
+    public final OperationStatus status;
+    public final ZonedDateTime createdAt;
+    
+    public enum Direction {
+        INCOMING,
+        OUTGOING,
+        CYCLICAL
+    }
+    
+    public enum OperationStatus {
+        CREATED,
+        SIGNING,
+        SIGNED,
+        BROADCASTED,
+        CONFIRMED,
+        DROPPED,
+        FAILED
+    }
+}
+```
+
+### Contact Model
+
+Represents a wallet contact:
+
+```java
+public class Contact {
+    public final Long id;
+    public final PublicProfile publicProfile;
+    public final Optional<PhoneNumber> phoneNumber;
+    public final Optional<String> email;
+    public final int maxAddressVersion;
+    public final PublicKey publicKey;
+    public final Optional<ZonedDateTime> lastActivityAt;
+}
+```
+
+<Note>
+**Immutability**: Most domain models use `final` fields and immutable patterns to prevent accidental state changes and make code more predictable.
+</Note>
+
+## Business Logic Managers
+
+Managers handle complex cross-cutting concerns:
+
+### ApplicationLockManager
+
+Manages app lock state and PIN/biometric authentication:
+
+```java
+public class ApplicationLockManager {
+    private final UserRepository userRepository;
+    private final PreferencesRepository preferencesRepository;
+    
+    public Observable<Boolean> isLockConfigured() {
+        return userRepository.getUser()
+            .map(user -> user.hasPassword || user.hasRecoveryCode);
+    }
+    
+    public void setLockTimeout(int minutes) {
+        preferencesRepository.setLockTimeout(minutes);
+    }
+    
+    public boolean shouldLock() {
+        long lastActive = preferencesRepository.getLastActiveTime();
+        long timeout = preferencesRepository.getLockTimeout();
+        return System.currentTimeMillis() - lastActive > timeout;
+    }
+}
+```
+
+Example from: `domain/ApplicationLockManager.java`
+
+### SignupDraftManager
+
+Manages the multi-step signup process:
+
+```java
+public class SignupDraftManager {
+    private final PreferencesRepository preferencesRepository;
+    
+    public void saveEmail(String email) {
+        SignupDraft draft = getDraft();
+        draft.email = email;
+        saveDraft(draft);
+    }
+    
+    public void savePassword(String password) {
+        SignupDraft draft = getDraft();
+        draft.hasPassword = true;
+        saveDraft(draft);
+    }
+    
+    public boolean isSignupComplete() {
+        SignupDraft draft = getDraft();
+        return draft.email != null 
+            && draft.hasPassword 
+            && draft.hasRecoveryCode;
+    }
+}
+```
+
+Example from: `domain/SignupDraftManager.kt`
+
+### NotificationProcessor
+
+Processes push notifications and triggers appropriate actions:
+
+```java
+public class NotificationProcessor {
+    private final OperationActions operationActions;
+    private final ContactActions contactActions;
+    private final UserActions userActions;
+    
+    public Completable process(Notification notification) {
+        switch (notification.type) {
+            case NEW_OPERATION:
+                return operationActions.syncOperations();
+            case NEW_CONTACT:
+                return contactActions.syncContacts();
+            case USER_UPDATED:
+                return userActions.syncUser();
+            default:
+                return Completable.complete();
+        }
+    }
+}
+```
+
+Example from: `domain/NotificationProcessor.java`
+
+## Selectors: Reactive Data Queries
+
+Selectors provide reactive access to data with business logic applied:
+
+```java
+public class OperationSelector {
+    private final OperationRepository repository;
+    
+    /**
+     * Watch all operations, sorted by date
+     */
+    public Observable<List<Operation>> watchAll() {
+        return repository.watchOperations()
+            .map(operations -> {
+                Collections.sort(operations, 
+                    (a, b) -> b.createdAt.compareTo(a.createdAt));
+                return operations;
+            });
+    }
+    
+    /**
+     * Watch pending operations only
+     */
+    public Observable<List<Operation>> watchPending() {
+        return watchAll()
+            .map(operations -> operations.stream()
+                .filter(op -> op.status == OperationStatus.CREATED 
+                           || op.status == OperationStatus.BROADCASTED)
+                .collect(Collectors.toList()));
+    }
+    
+    /**
+     * Calculate total balance
+     */
+    public Observable<MonetaryAmount> watchBalance() {
+        return watchAll()
+            .map(operations -> {
+                MonetaryAmount total = MonetaryAmount.ZERO;
+                for (Operation op : operations) {
+                    if (op.status == OperationStatus.CONFIRMED) {
+                        total = op.direction == Direction.INCOMING 
+                            ? total.add(op.amount)
+                            : total.subtract(op.amount);
+                    }
+                }
+                return total;
+            });
+    }
+}
+```
+
+<Tip>
+Selectors encapsulate business rules for data queries, keeping repositories simple and focused on data access.
+</Tip>
+
+## Error Handling
+
+The `errors` package defines domain-specific exceptions:
+
+```
+errors/
+├── BugDetected              # Unexpected state errors
+├── SecureStorageError       # Key storage failures
+├── UserFacingError          # Errors to show users
+├── newop/                   # Operation creation errors
+│   ├── InvalidInvoiceException
+│   ├── InvoiceExpiredException
+│   └── InsufficientFundsException
+└── delete_wallet/           # Wallet deletion errors
+    ├── NonEmptyWalletDeleteException
+    └── UnsettledOperationsWalletDeleteException
+```
+
+### Error Hierarchy
+
+```java
+public abstract class MuunError extends RuntimeException {
+    // Base error class
+}
+
+public class UserFacingError extends MuunError {
+    // Errors that should be shown to users
+    public String getUserFacingMessage();
+}
+
+public class BugDetected extends MuunError {
+    // Programming errors that shouldn't happen
+}
+```
+
+<Warning>
+**Error Handling Best Practice**: Always use domain-specific exceptions. Generic exceptions make it hard to understand what went wrong and how to handle it.
+</Warning>
+
+## LibWallet Integration
+
+The `libwallet` package integrates the Bitcoin wallet library (written in Go, compiled to native code):
+
+```
+libwallet/
+├── LibwalletBridge          # JNI bridge to native code
+├── AddressHelper            # Address generation
+├── TransactionHelper        # Transaction building
+├── InvoiceHelper            # Lightning invoice parsing
+└── KeyCrypter               # Key encryption/decryption
+```
+
+### Address Generation
+
+```java
+public class AddressHelper {
+    /**
+     * Generate a new Bitcoin address
+     */
+    public static String generateAddress(
+            PublicKey userKey,
+            PublicKey muunKey,
+            int derivationIndex
+    ) {
+        // Calls native libwallet code
+        return Libwallet.createAddress(
+            userKey.serializeBase58(),
+            muunKey.serializeBase58(),
+            derivationIndex
+        );
+    }
+}
+```
+
+### Transaction Creation
+
+```java
+public class TransactionHelper {
+    /**
+     * Build a Bitcoin transaction
+     */
+    public static Transaction buildTransaction(
+            List<TransactionInput> inputs,
+            List<TransactionOutput> outputs,
+            long feeRate
+    ) {
+        // Native transaction building
+        return Libwallet.buildTransaction(
+            serializeInputs(inputs),
+            serializeOutputs(outputs),
+            feeRate
+        );
+    }
+}
+```
+
+<Info>
+**Security Critical**: Most cryptographic operations happen in the native libwallet library. This code requires careful security audits.
+</Info>
+
+## Business Logic Examples
+
+### Creating a New Operation
+
+```java
+public class CreateOperationAction extends BaseAsyncAction2<Address, MonetaryAmount, Operation> {
+    private final OperationRepository operationRepository;
+    private final FeeRepository feeRepository;
+    private final TransactionHelper transactionHelper;
+    
+    @Override
+    public Observable<Operation> action(Address address, MonetaryAmount amount) {
+        return Observable.zip(
+            operationRepository.getAvailableInputs(),
+            feeRepository.getCurrentFeeRate(),
+            (inputs, feeRate) -> {
+                // Business logic: validate amount
+                MonetaryAmount total = calculateTotal(inputs);
+                if (amount.isGreaterThan(total)) {
+                    throw new InsufficientFundsException();
+                }
+                
+                // Build transaction draft
+                Transaction tx = transactionHelper.buildTransaction(
+                    inputs,
+                    createOutputs(address, amount),
+                    feeRate
+                );
+                
+                // Create operation
+                Operation operation = new Operation(
+                    null, // No ID yet
+                    tx.getTxId(),
+                    amount,
+                    tx.getFee(),
+                    address.address,
+                    Direction.OUTGOING,
+                    OperationStatus.CREATED,
+                    ZonedDateTime.now()
+                );
+                
+                return operation;
+            }
+        )
+        .flatMap(operation -> 
+            // Save to repository
+            operationRepository.save(operation)
+        );
+    }
+}
+```
+
+### User Authentication Flow
+
+```java
+public class AuthenticationFlow {
+    private final SigninActions signinActions;
+    private final ChallengeActions challengeActions;
+    private final UserRepository userRepository;
+    
+    public Observable<User> authenticate(String email, String password) {
+        return challengeActions.requestChallenge(ChallengeType.PASSWORD)
+            .flatMap(challenge -> {
+                // Sign challenge with password
+                ChallengeSignature signature = 
+                    signChallenge(challenge, password);
+                
+                // Submit signature
+                return challengeActions.submitSignature(signature);
+            })
+            .flatMap(keySet -> {
+                // Store authentication keys
+                signinActions.storeKeySet(keySet);
+                
+                // Fetch user data
+                return userRepository.fetchUser();
+            });
+    }
+}
+```
+
+### Lightning Invoice Processing
+
+```java
+public class ProcessInvoiceAction extends BaseAsyncAction1<String, SubmarineSwap> {
+    private final InvoiceHelper invoiceHelper;
+    private final SubmarineSwapRepository swapRepository;
+    private final BalanceRepository balanceRepository;
+    
+    @Override
+    public Observable<SubmarineSwap> action(String invoiceString) {
+        // Parse invoice
+        Invoice invoice = invoiceHelper.parseInvoice(invoiceString);
+        
+        return Observable.just(invoice)
+            .flatMap(inv -> {
+                // Validate invoice
+                if (inv.isExpired()) {
+                    throw new InvoiceExpiredException(inv);
+                }
+                
+                if (!inv.hasAmount()) {
+                    throw new InvoiceMissingAmountException(inv);
+                }
+                
+                // Check balance
+                return balanceRepository.getBalance()
+                    .map(balance -> {
+                        if (inv.amount.isGreaterThan(balance)) {
+                            throw new InsufficientFundsException();
+                        }
+                        return inv;
+                    });
+            })
+            .flatMap(inv -> 
+                // Create submarine swap
+                swapRepository.createSwap(inv)
+            );
+    }
+}
+```
+
+## Testing Domain Layer
+
+### Unit Testing Actions
+
+```java
+public class SigninActionsTest {
+    @Mock
+    private AuthRepository authRepository;
+    
+    private SigninActions signinActions;
+    
+    @Before
+    public void setUp() {
+        MockitoAnnotations.initMocks(this);
+        signinActions = new SigninActions(authRepository);
+    }
+    
+    @Test
+    public void getSessionStatus_returnsRepositoryValue() {
+        // Given
+        SessionStatus expected = SessionStatus.LOGGED_IN;
+        when(authRepository.getSessionStatus())
+            .thenReturn(Optional.of(expected));
+        
+        // When
+        Optional<SessionStatus> result = signinActions.getSessionStatus();
+        
+        // Then
+        assertEquals(Optional.of(expected), result);
+    }
+}
+```
+
+### Testing Business Logic
+
+```java
+public class BalanceCalculationTest {
+    @Test
+    public void calculateBalance_withMixedOperations() {
+        // Given
+        List<Operation> operations = Arrays.asList(
+            createOperation(Direction.INCOMING, btc(1.0), CONFIRMED),
+            createOperation(Direction.OUTGOING, btc(0.3), CONFIRMED),
+            createOperation(Direction.INCOMING, btc(0.5), CONFIRMED)
+        );
+        
+        // When
+        MonetaryAmount balance = calculateBalance(operations);
+        
+        // Then
+        assertEquals(btc(1.2), balance);
+    }
+}
+```
+
+## Best Practices
+
+<Tip>
+**Domain Layer Guidelines**
+
+1. **Pure Business Logic**: No Android dependencies
+2. **Testable**: All actions testable with mocked repositories
+3. **Immutable Models**: Use `final` fields and immutable patterns
+4. **Reactive Streams**: Use RxJava for async operations
+5. **Domain Errors**: Use specific exception types
+6. **Single Responsibility**: Each action does one thing
+</Tip>
+
+## Security Considerations
+
+<Warning>
+**Domain Layer Security Checklist**
+
+- ✅ All transaction signing logic reviewed
+- ✅ Amount validations prevent overflow
+- ✅ Authorization checks before sensitive operations
+- ✅ Cryptographic operations use libwallet
+- ✅ No secrets in logs or error messages
+- ✅ Challenge-response authentication properly implemented
+</Warning>
+
+## Common Patterns
+
+### Action Composition
+
+```java
+public Observable<Result> complexOperation() {
+    return action1.execute()
+        .flatMap(result1 -> action2.execute(result1))
+        .flatMap(result2 -> action3.execute(result2));
+}
+```
+
+### Error Recovery
+
+```java
+public Observable<Data> fetchWithFallback() {
+    return networkAction.execute()
+        .onErrorResumeNext(error -> {
+            if (error instanceof NetworkError) {
+                return cacheAction.execute();
+            }
+            return Observable.error(error);
+        });
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Data Layer" icon="database" href="/architecture/data-layer">
+    See how data layer provides repositories
+  </Card>
+  <Card title="Presentation Layer" icon="mobile" href="/architecture/presentation-layer">
+    Learn how UI layer uses actions
+  </Card>
+</CardGroup>

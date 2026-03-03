@@ -1,0 +1,228 @@
+---
+title: 'WalletService gRPC API'
+description: 'Complete WalletService gRPC API reference with security card, diagnostic, recovery, and storage operations'
+---
+
+## Overview
+
+The WalletService provides a comprehensive gRPC API for interacting with the Muun Wallet libwallet. It includes operations for NFC security cards, diagnostic mode, recovery code setup, and key-value storage.
+
+## Service Definition
+
+```proto
+service WalletService {
+  // Security Card Operations
+  rpc SetupSecurityCard(google.protobuf.Empty) returns (XpubResponse);
+  rpc ResetSecurityCard(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc SignMessageSecurityCard(SignMessageSecurityCardRequest) returns (SignMessageSecurityCardResponse);
+  rpc SetupSecurityCardV2(google.protobuf.Empty) returns (SetupSecurityCardResponse);
+  rpc SignMessageSecurityCardV2(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // Diagnostic Mode Operations
+  rpc StartDiagnosticSession(google.protobuf.Empty) returns (DiagnosticSessionDescriptor);
+  rpc PerformDiagnosticScanForUtxos(DiagnosticSessionDescriptor) returns (stream ScanProgressUpdate);
+  rpc SubmitDiagnosticLog(DiagnosticSessionDescriptor) returns (DiagnosticSubmitStatus);
+  rpc PrepareSweepTx(PrepareSweepTxRequest) returns (PrepareSweepTxResponse);
+  rpc SignAndBroadcastSweepTx(SignAndBroadcastSweepTxRequest) returns (SignAndBroadcastSweepTxResponse);
+
+  // Recovery Code Setup
+  rpc StartChallengeSetup(ChallengeSetupRequest) returns (SetupChallengeResponse);
+  rpc FinishRecoveryCodeSetup(FinishRecoveryCodeSetupRequest) returns (google.protobuf.Empty);
+  rpc PopulateEncryptedMuunKey(PopulateEncryptedMuunKeyRequest) returns (google.protobuf.Empty);
+
+  // Key-Value Storage
+  rpc Save(SaveRequest) returns (google.protobuf.Empty);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+  rpc SaveBatch(SaveBatchRequest) returns (google.protobuf.Empty);
+  rpc GetBatch(GetBatchRequest) returns (GetBatchResponse);
+  rpc GetByPrefix(GetByPrefixRequest) returns (GetBatchResponse);
+}
+```
+
+## Security Card Operations
+
+### SetupSecurityCard
+
+Initialize a new NFC security card and retrieve its extended public key.
+
+**Request:** `google.protobuf.Empty`
+
+**Response:** `XpubResponse`
+
+<ResponseField name="base58_xpub" type="string">
+  The base58-encoded extended public key of the security card
+</ResponseField>
+
+---
+
+### SetupSecurityCardV2
+
+Initialize a new NFC security card (V2 protocol) with enhanced validation.
+
+**Request:** `google.protobuf.Empty`
+
+**Response:** `SetupSecurityCardResponse`
+
+<ResponseField name="is_known_provider" type="bool">
+  Indicates whether the card provider is recognized
+</ResponseField>
+
+<ResponseField name="is_card_already_used" type="bool">
+  Indicates whether the card has been previously used
+</ResponseField>
+
+---
+
+### SignMessageSecurityCard
+
+Sign a message using the NFC security card.
+
+**Request:** `SignMessageSecurityCardRequest`
+
+<ParamField path="message_hex" type="string" required>
+  The message to sign, encoded in hexadecimal format
+</ParamField>
+
+**Response:** `SignMessageSecurityCardResponse`
+
+<ResponseField name="signed_message_hex" type="string">
+  The signed message in hexadecimal format
+</ResponseField>
+
+<ResponseField name="is_validated" type="bool">
+  Indicates whether the signature was successfully validated
+</ResponseField>
+
+---
+
+### ResetSecurityCard
+
+Reset the NFC security card to its factory state.
+
+**Request:** `google.protobuf.Empty`
+
+**Response:** `google.protobuf.Empty`
+
+---
+
+### SignMessageSecurityCardV2
+
+Sign a message using the NFC security card (V2 protocol).
+
+**Request:** `google.protobuf.Empty`
+
+**Response:** `google.protobuf.Empty`
+
+## Diagnostic Mode Operations
+
+See [Diagnostic Mode APIs](/api/diagnostic-mode) for detailed documentation.
+
+## Recovery Code Setup
+
+### StartChallengeSetup
+
+Initiate the recovery code challenge setup process.
+
+**Request:** `ChallengeSetupRequest`
+
+<ParamField path="type" type="string" required>
+  The type of challenge being set up
+</ParamField>
+
+<ParamField path="public_key" type="string" required>
+  The public key for the recovery code
+</ParamField>
+
+<ParamField path="salt" type="string" required>
+  Salt value for key derivation
+</ParamField>
+
+<ParamField path="encrypted_private_key" type="string" required>
+  The encrypted private key
+</ParamField>
+
+<ParamField path="version" type="int32" required>
+  Version number of the challenge setup protocol
+</ParamField>
+
+**Response:** `SetupChallengeResponse`
+
+<ResponseField name="muun_key" type="string" optional>
+  The Muun server key (optional)
+</ResponseField>
+
+<ResponseField name="muun_key_fingerprint" type="string" optional>
+  Fingerprint of the Muun key for verification (optional)
+</ResponseField>
+
+---
+
+### FinishRecoveryCodeSetup
+
+Complete the recovery code setup process.
+
+**Request:** `FinishRecoveryCodeSetupRequest`
+
+<ParamField path="recovery_code_public_key_hex" type="string" required>
+  The recovery code public key in hexadecimal format
+</ParamField>
+
+**Response:** `google.protobuf.Empty`
+
+---
+
+### PopulateEncryptedMuunKey
+
+Populate the encrypted Muun key during recovery setup.
+
+**Request:** `PopulateEncryptedMuunKeyRequest`
+
+<ParamField path="recovery_code_public_key_hex" type="string" required>
+  The recovery code public key in hexadecimal format
+</ParamField>
+
+**Response:** `google.protobuf.Empty`
+
+## Key-Value Storage Operations
+
+See [Key-Value Storage APIs](/api/storage) for detailed documentation.
+
+## Error Handling
+
+All RPC methods may return errors with the following structure:
+
+```proto
+enum ErrorType {
+  CLIENT = 0;      // Client-side error
+  LIBWALLET = 1;   // Libwallet error
+  HOUSTON = 2;     // Server-side error
+}
+
+message ErrorDetail {
+  ErrorType type = 1;
+  int64 code = 2;
+  string message = 3;
+  string developer_message = 4;
+}
+```
+
+<ResponseField name="type" type="ErrorType">
+  The category of error (CLIENT, LIBWALLET, or HOUSTON)
+</ResponseField>
+
+<ResponseField name="code" type="int64">
+  Numeric error code for programmatic handling
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable error message
+</ResponseField>
+
+<ResponseField name="developer_message" type="string">
+  Detailed error message for debugging
+</ResponseField>
+
+## Source Reference
+
+Protobuf definition: `libwallet/presentation/api/wallet_service.proto`

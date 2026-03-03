@@ -1,0 +1,288 @@
+---
+title: LNURL Protocol Support
+description: LNURL-withdraw implementation for Lightning Network URL-based protocols
+---
+
+## Overview
+
+The LNURL implementation in libwallet provides support for LNURL-withdraw, enabling users to withdraw funds from LNURL-enabled services. The protocol converts LNURL codes into actionable Lightning invoice requests.
+
+<Note>
+LNURL is a protocol specification for Lightning Network services defined at [github.com/lnurl/luds](https://github.com/lnurl/luds). LNURL-withdraw is specified in LUD-03.
+</Note>
+
+## Event System
+
+LNURL operations use an event-driven architecture with status updates and error reporting:
+
+### LNURLEvent Structure
+
+```go
+type LNURLEvent struct {
+    Code     int                  // Status or error code
+    Message  string              // Human-readable message
+    Metadata *LNURLEventMetadata // Additional event data
+}
+
+type LNURLEventMetadata struct {
+    Host    string  // LNURL service host
+    Invoice string  // Generated invoice
+}
+```
+
+### Event Listener Interface
+
+```go
+type LNURLListener interface {
+    OnUpdate(e *LNURLEvent)  // Called for status updates
+    OnError(e *LNURLEvent)   // Called when errors occur
+}
+```
+
+## Status Codes
+
+The implementation defines the following status and error codes:
+
+### Status Codes (>= 100)
+
+```go
+LNURLStatusContacting      = 110  // Contacting LNURL service
+LNURLStatusInvoiceCreated  = 120  // Invoice created successfully
+LNURLStatusReceiving       = 130  // Receiving payment
+```
+
+### Error Codes (< 100)
+
+```go
+LNURLErrDecode              // Failed to decode LNURL
+LNURLErrUnsafeURL           // URL is not HTTPS or uses Tor (on mainnet)
+LNURLErrUnreachable         // Service is unreachable
+LNURLErrInvalidResponse     // Invalid response from service
+LNURLErrResponse            // Error response from service
+LNURLErrUnknown             // Unknown error
+LNURLErrWrongTag            // Wrong LNURL tag (not withdraw)
+LNURLErrNoAvailableBalance  // Insufficient balance at service
+LNURLErrRequestExpired      // Request has expired
+LNURLErrNoRoute             // No route to destination
+LNURLErrTorNotSupported     // Tor URLs not supported
+LNURLErrAlreadyUsed         // LNURL already used
+LNURLErrForbidden           // Access forbidden
+LNURLErrCountryNotSupported // Service not available in country
+```
+
+## LNURL Validation
+
+Validate an LNURL code before processing:
+
+```go
+func validateLNURL(qr string) bool {
+    isValid := LNURLValidate(qr)
+    return isValid
+}
+
+// Example usage
+lnurlCode := "LNURL1DP68GURN8GHJ7UM9WFMXJCM99E3K7MF0V9CXJ0M385EKVCENXC6R2C35XVUKXEFCV5MKVV34X5EKZD3EV56NYD3HXQURZEPEXEJXXEPNXSCRVWFNV9NXZCN9XQ6XYEFHVGCXXCMYXYMNSERXFQ5FNS"
+if LNURLValidate(lnurlCode) {
+    // Valid LNURL code
+}
+```
+
+## LNURL Withdraw
+
+Process an LNURL-withdraw request:
+
+```go
+// Create invoice builder
+network := Mainnet()
+invoiceBuilder := NewInvoiceBuilder()
+    .Network(network)
+    .UserKey(userKey)
+    .MuunKey(muunKey)
+
+// Create listener
+listener := &MyLNURLListener{}
+
+// Start withdraw process
+LNURLWithdraw(invoiceBuilder, lnurlCode, listener)
+
+// Listener implementation
+type MyLNURLListener struct{}
+
+func (l *MyLNURLListener) OnUpdate(e *LNURLEvent) {
+    switch e.Code {
+    case LNURLStatusContacting:
+        fmt.Printf("Contacting service: %s\n", e.Metadata.Host)
+    case LNURLStatusInvoiceCreated:
+        fmt.Printf("Invoice created: %s\n", e.Metadata.Invoice)
+    case LNURLStatusReceiving:
+        fmt.Println("Receiving payment...")
+    }
+}
+
+func (l *MyLNURLListener) OnError(e *LNURLEvent) {
+    fmt.Printf("Error %d: %s\n", e.Code, e.Message)
+}
+```
+
+## Implementation Details
+
+### Invoice Creation
+
+The withdraw process automatically creates a Lightning invoice with the appropriate amount:
+
+```go
+// Source: libwallet/lnurl.go:53-62
+createInvoiceFunc := func(amt lnwire.MilliSatoshi, desc string, host string) (string, error) {
+    metadata := &OperationMetadata{
+        LnurlSender: host,
+    }
+    
+    return invoiceBuilder.AmountMSat(int64(amt)).
+        Description(desc).
+        Metadata(metadata).
+        Build()
+}
+```
+
+### Security Considerations
+
+The implementation enforces HTTPS for mainnet operations:
+
+```go
+// Source: libwallet/lnurl.go:64
+allowUnsafe := !reflect.DeepEqual(invoiceBuilder.net, Mainnet())
+```
+
+<Note>
+On mainnet, LNURL services must use HTTPS. Unsafe URLs (HTTP or Tor) are only allowed on testnet and regtest networks.
+</Note>
+
+### Asynchronous Processing
+
+LNURL withdraw runs asynchronously in a goroutine:
+
+```go
+// Source: libwallet/lnurl.go:66
+go lnurl.Withdraw(qr, createInvoiceFunc, allowUnsafe, func(e *lnurl.Event) {
+    // Event handling
+})
+```
+
+## Usage Examples
+
+### Complete Withdraw Flow
+
+```go
+type WithdrawHandler struct {
+    invoiceReceived chan string
+    errorOccurred   chan error
+}
+
+func (h *WithdrawHandler) OnUpdate(e *LNURLEvent) {
+    switch e.Code {
+    case LNURLStatusContacting:
+        log.Printf("Contacting %s", e.Metadata.Host)
+        
+    case LNURLStatusInvoiceCreated:
+        log.Printf("Invoice created: %s", e.Metadata.Invoice)
+        h.invoiceReceived <- e.Metadata.Invoice
+        
+    case LNURLStatusReceiving:
+        log.Println("Waiting for payment...")
+    }
+}
+
+func (h *WithdrawHandler) OnError(e *LNURLEvent) {
+    h.errorOccurred <- fmt.Errorf("LNURL error %d: %s", e.Code, e.Message)
+}
+
+func withdrawFunds(invoiceBuilder *InvoiceBuilder, lnurl string) error {
+    handler := &WithdrawHandler{
+        invoiceReceived: make(chan string, 1),
+        errorOccurred:   make(chan error, 1),
+    }
+    
+    LNURLWithdraw(invoiceBuilder, lnurl, handler)
+    
+    select {
+    case invoice := <-handler.invoiceReceived:
+        log.Printf("Success! Invoice: %s", invoice)
+        return nil
+    case err := <-handler.errorOccurred:
+        return err
+    }
+}
+```
+
+### Validate Before Processing
+
+```go
+func processLNURL(qr string, invoiceBuilder *InvoiceBuilder) error {
+    // Validate first
+    if !LNURLValidate(qr) {
+        return errors.New("invalid LNURL code")
+    }
+    
+    // Create listener
+    listener := &MyLNURLListener{}
+    
+    // Process
+    LNURLWithdraw(invoiceBuilder, qr, listener)
+    
+    return nil
+}
+```
+
+### Error Handling by Code
+
+```go
+func (l *MyLNURLListener) OnError(e *LNURLEvent) {
+    switch e.Code {
+    case LNURLErrUnsafeURL:
+        // Handle unsafe URL error
+        log.Println("Service must use HTTPS")
+        
+    case LNURLErrNoAvailableBalance:
+        // Handle insufficient balance
+        log.Println("Service has no available balance")
+        
+    case LNURLErrAlreadyUsed:
+        // Handle already used LNURL
+        log.Println("This LNURL has already been used")
+        
+    case LNURLErrRequestExpired:
+        // Handle expired request
+        log.Println("LNURL request has expired")
+        
+    default:
+        log.Printf("Error %d: %s", e.Code, e.Message)
+    }
+}
+```
+
+## Protocol Flow
+
+1. **Decode LNURL**: Extract URL from bech32-encoded LNURL
+2. **Contact Service**: HTTP GET request to decoded URL
+3. **Parse Response**: Validate withdraw parameters (min/max amount)
+4. **Create Invoice**: Generate Lightning invoice with requested amount
+5. **Submit Invoice**: POST invoice back to service callback URL
+6. **Wait for Payment**: Service pays the invoice
+
+## Error Recovery
+
+Common errors and solutions:
+
+| Error Code | Cause | Solution |
+|------------|-------|----------|
+| `ErrUnsafeURL` | HTTP or Tor URL on mainnet | Only use HTTPS services |
+| `ErrUnreachable` | Network connectivity | Check internet connection |
+| `ErrAlreadyUsed` | LNURL already redeemed | Get a new LNURL |
+| `ErrRequestExpired` | LNURL expired | Request a new LNURL |
+| `ErrNoAvailableBalance` | Service has no funds | Contact service provider |
+
+## See Also
+
+- [Invoice API](/api/invoice) - Lightning invoice creation
+- [BIP21 URI](/api/bip21) - Bitcoin payment URI handling
+- [Network API](/api/network) - Network configuration

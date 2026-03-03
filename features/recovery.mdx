@@ -1,0 +1,583 @@
+---
+title: "Recovery Mechanisms"
+description: "Complete guide to recovering your Muun Wallet funds in any scenario, from simple device loss to complete server failure"
+icon: "life-ring"
+---
+
+## Overview
+
+Muun Wallet provides **multiple recovery mechanisms** to ensure you can always access your Bitcoin, regardless of what happens to your device, Muun's servers, or your backups. Understanding these mechanisms is crucial for maintaining control of your funds.
+
+<Note>
+Muun's architecture ensures you always maintain sovereignty over your funds. Even if Muun disappears, you can recover everything using your Emergency Kit.
+</Note>
+
+## Recovery Scenarios
+
+### Scenario 1: Lost or Broken Device (Muun Operational)
+
+**Situation**: Your phone is lost, stolen, or broken, but Muun's servers are working.
+
+**Requirements**:
+- Recovery code (written down during wallet creation)
+
+**Process**:
+
+1. **Install Muun** on a new device
+2. **Tap "Recover wallet"** on the welcome screen
+3. **Enter recovery code** (8 words or alphanumeric string)
+4. **Set new PIN** for the new device
+5. **Wait for sync** (wallet state downloads from server)
+6. **Access restored** with full balance and history
+
+**Time**: 2-5 minutes
+
+**Difficulty**: Easy ⭐
+
+<Tip>
+This is the most common recovery scenario. As long as you have your recovery code, you can restore your wallet to any device instantly.
+</Tip>
+
+### Scenario 2: Forgotten PIN (Device Still Available)
+
+**Situation**: You forgot your PIN but still have the device.
+
+**Requirements**:
+- Recovery code
+- Access to the device (locked)
+
+**Process**:
+
+1. **Tap "Forgot PIN?"** on the lock screen
+2. **Enter recovery code**
+3. **Set new PIN**
+4. **Wallet unlocked** without losing any data
+
+**Time**: 1 minute
+
+**Difficulty**: Easy ⭐
+
+### Scenario 3: Lost Recovery Code (Device Still Available)
+
+**Situation**: You lost your recovery code but still have access to the unlocked wallet.
+
+**Requirements**:
+- Access to unlocked wallet
+
+**Process**:
+
+1. **Open Muun** (unlock with PIN/biometrics)
+2. **Go to Settings → Security**
+3. **Tap "Show Recovery Code"**
+4. **Authenticate** (PIN/biometrics/security card)
+5. **Write down new code** on paper
+6. **Verify** you've written it correctly
+7. **Store securely** in multiple locations
+
+**Time**: 5 minutes
+
+**Difficulty**: Easy ⭐
+
+<Warning>
+Do this NOW if you haven't written down your recovery code. Without it, losing your device means losing your Bitcoin.
+</Warning>
+
+### Scenario 4: Complete Emergency (Muun Offline Forever)
+
+**Situation**: Muun's servers are permanently offline, company is gone, or you want to recover without their cooperation.
+
+**Requirements**:
+- Emergency Kit PDF
+- Recovery code
+- Bitcoin recovery tool (Muun provides one, or use Bitcoin Core)
+
+**Process**: See [Emergency Recovery](#emergency-recovery) section below.
+
+**Time**: 30-120 minutes
+
+**Difficulty**: Advanced ⭐⭐⭐⭐
+
+## Recovery Code
+
+### What is the Recovery Code?
+
+The recovery code is a **cryptographically secure password** generated when you create your wallet. It's the master key to your Bitcoin.
+
+```go
+// From recoverycode.go:7
+const RecoveryCodeAlphabet = recoverycode.Alphabet
+
+func GenerateRecoveryCode() string {
+    return recoverycode.Generate()
+}
+```
+
+Properties:
+- **Random generation**: Uses cryptographically secure random number generator
+- **High entropy**: 128+ bits of randomness
+- **Versioned format**: Supports upgrades to the code format
+- **Checksum**: Detects typos during entry
+
+Source: `libwallet/recoverycode.go:12-15`
+
+### Recovery Code Format
+
+Muun supports multiple recovery code versions:
+
+```go
+// From recoverycode.go:22
+func RecoveryCodeToKey(code, salt string) (*ChallengePrivateKey, error) {
+    privKey, err := recoverycode.ConvertToKey(code, salt)
+    if err != nil {
+        return nil, err
+    }
+    return &ChallengePrivateKey{key: privKey}, nil
+}
+
+func GetRecoveryCodeVersion(code string) (int, error) {
+    return recoverycode.Version(code)
+}
+```
+
+**Version 1**: Uses salt from second encrypted key
+**Version 2+**: Salt embedded in code format
+
+Source: `libwallet/recoverycode.go:22-40`
+
+### Recovery Code Validation
+
+```go
+// From recoverycode.go:32
+func ValidateRecoveryCode(code string) error {
+    return recoverycode.Validate(code)
+}
+```
+
+Validation checks:
+- Correct alphabet (no confusing characters like 0/O or 1/I/l)
+- Proper length
+- Valid checksum
+- Recognized version
+
+This prevents most typos when entering the code.
+
+### Storing Your Recovery Code
+
+**Critical Best Practices**:
+
+<Tip>
+- **Write on paper**: Never store digitally
+- **Multiple copies**: At least 2-3 copies
+- **Different locations**: Home safe, bank deposit box, trusted family
+- **Separate from Emergency Kit**: Don't store together
+- **Test recovery**: Verify it works on a fresh install (with small amounts first)
+- **No photos**: Don't photograph or screenshot
+- **Metal backup**: Consider stamped metal plates for fire/water resistance
+</Tip>
+
+**Common Mistakes to Avoid**:
+
+- ❌ "I'll remember it" (you won't)
+- ❌ Saving in password manager (defeats the purpose)
+- ❌ Storing in cloud (can be hacked)
+- ❌ Only one copy (can be lost/destroyed)
+- ❌ Storing with Emergency Kit PDF (all-eggs-one-basket)
+
+## Emergency Recovery
+
+### When to Use Emergency Recovery
+
+Use this process when:
+
+- Muun's servers are permanently offline
+- You don't trust Muun anymore and want to migrate
+- Normal recovery isn't working
+- You want to prove you can recover independently
+
+### Prerequisites
+
+**You Need**:
+
+1. **Emergency Kit PDF** (from your backup)
+2. **Recovery Code** (written down separately)
+3. **Bitcoin recovery tool**:
+   - Muun's official recovery tool (recommended)
+   - Bitcoin Core with descriptor wallet support
+   - Custom tool following Muun's specs
+
+**You'll Create**:
+
+- A new Bitcoin wallet to sweep funds to
+- Transactions signed with both recovered keys
+
+### Step-by-Step Emergency Recovery
+
+#### Step 1: Extract Encrypted Keys
+
+```go
+// From challenge_keys.go:117
+func DecodeEncryptedPrivateKey(encodedKey string) (*EncryptedPrivateKeyInfo, error) {
+    reader := bytes.NewReader(base58.Decode(encodedKey))
+    version, err := reader.ReadByte()
+    
+    if version == KeySerializationVersion2 {
+        return decodeEncryptedPrivateKeyV2(reader, encodedKey)
+    }
+    
+    if version == KeySerializationVersion3 {
+        return decodeEncryptedPrivateKeyV3(reader)
+    }
+    
+    return nil, fmt.Errorf("unrecognized key version %v", version)
+}
+```
+
+From the Emergency Kit PDF:
+
+1. **Open PDF** in any PDF reader
+2. **Locate encrypted keys** section
+3. **Copy first encrypted key** (user key)
+4. **Copy second encrypted key** (Muun's key)
+5. **Note the fingerprints** for verification
+
+Source: `libwallet/challenge_keys.go:117-134`
+
+#### Step 2: Decrypt Keys with Recovery Code
+
+```go
+// From challenge_keys.go:55
+func NewChallengePrivateKey(input, salt []byte) *ChallengePrivateKey {
+    key := Scrypt256(input, salt)
+    priv, _ := btcec.PrivKeyFromBytes(key)
+    
+    return &ChallengePrivateKey{key: priv}
+}
+
+func (k *ChallengePrivateKey) DecryptKey(decodedInfo *EncryptedPrivateKeyInfo,
+    network *Network) (*DecryptedPrivateKey, error) {
+    
+    decoded, err := unwrapEncryptedPrivateKey(decodedInfo)
+    
+    plaintext, err := decryptWithPrivKey(k.key, decoded.EphPublicKey,
+        decoded.CipherText)
+    
+    rawPrivKey := plaintext[0:32]
+    rawChainCode := plaintext[32:]
+    
+    privKey, err := NewMasterHDPrivateKeyFromBytes(rawPrivKey, rawChainCode, network)
+    
+    return &DecryptedPrivateKey{
+        privKey,
+        int(decoded.Birthday),
+    }, nil
+}
+```
+
+**Decryption Process**:
+
+1. **Convert recovery code to key**:
+   - Apply Scrypt KDF with salt
+   - Produces challenge private key
+
+2. **For each encrypted key**:
+   - Parse ephemeral public key from encrypted data
+   - Perform ECDH: challenge_key × ephemeral_pubkey = shared_secret
+   - Decrypt ciphertext using shared secret
+   - Extract 32-byte private key + 32-byte chain code
+   - Reconstruct BIP32 HD master key
+
+3. **Verify**:
+   - Derive public key from private key
+   - Check fingerprint matches PDF
+   - Confirm it's the correct key
+
+Source: `libwallet/challenge_keys.go:55-115`
+
+#### Step 3: Scan Blockchain for UTXOs
+
+```go
+// From emergency_kit.go:137
+metadata := &emergencykit.Metadata{
+    BirthdayBlock:     secondKey.Birthday,
+    OutputDescriptors: descriptors,
+    // ...
+}
+```
+
+Using the birthday block from metadata:
+
+1. **Start at birthday block** (no need to scan earlier)
+2. **Use output descriptors** to generate all address types:
+   - V2: P2SH multisig
+   - V3-V4: P2WSH SegWit multisig
+   - V5-V6: P2TR Taproot with MuSig2
+   - Submarine swaps
+   - Incoming swaps
+
+3. **Derive addresses** using both keys:
+   ```
+   For each derivation path:
+     user_pubkey = user_key.derive(path)
+     muun_pubkey = muun_key.derive(path)
+     address = create_multisig(user_pubkey, muun_pubkey)
+   ```
+
+4. **Check each address** for UTXOs on the blockchain
+
+5. **Build UTXO list** with amounts and outpoints
+
+**Tools**:
+- Bitcoin Core's `scantxoutset` with descriptors
+- Electrum server queries
+- Block explorer APIs (less private)
+
+#### Step 4: Create Sweep Transaction
+
+To move funds to a new wallet:
+
+```go
+// From V2.go:72
+func (c *coinV2) FullySignInput(index int, tx *wire.MsgTx, userKey, 
+    muunKey *HDPrivateKey) error {
+    
+    derivedUserKey, err := userKey.DeriveTo(c.KeyPath)
+    derivedMuunKey, err := muunKey.DeriveTo(c.KeyPath)
+    
+    muunSignature, err := c.signature(index, tx, derivedUserKey.PublicKey(),
+        derivedMuunKey.PublicKey(), derivedMuunKey)
+    
+    c.MuunSignature = muunSignature
+    return c.SignInput(index, tx, userKey, muunKey.PublicKey())
+}
+```
+
+**Sweep Transaction**:
+
+1. **Create transaction**:
+   - Inputs: All UTXOs you found
+   - Output: Your new wallet's address
+   - Fee: Estimate current network fee
+
+2. **Sign inputs**:
+   - For each input, derive keys using its path
+   - Create user signature
+   - Create Muun signature (you have both keys!)
+   - Build witness/scriptSig with both signatures
+
+3. **Verify transaction**:
+   - Check all inputs are signed correctly
+   - Verify fee is reasonable
+   - Confirm output address is yours
+
+4. **Broadcast transaction**:
+   - Submit to Bitcoin network via any node
+   - Monitor for confirmation
+
+Source: `libwallet/V2.go:72-90`
+
+#### Step 5: Wait for Confirmation
+
+Once broadcast:
+
+- **First confirmation**: 10 minutes average
+- **Full security**: 6 confirmations (1 hour)
+- **Track status**: Use block explorers
+- **Funds in new wallet**: Once confirmed, emergency complete!
+
+### Recovery Tool Recommendations
+
+**Official Muun Recovery Tool** (Recommended):
+- Pre-built for Muun's format
+- Handles all address versions
+- Automates the entire process
+- Open source for verification
+
+**Bitcoin Core** (Advanced):
+```bash
+# Import descriptors from Emergency Kit
+bitcoin-cli importdescriptors '[{"desc":"...", "timestamp":1234567890}]'
+
+# Scan for UTXOs
+bitcoin-cli scantxoutset start '["desc"]'
+
+# Create and sign transaction
+bitcoin-cli createrawtransaction '[...]' '{"address":amount}'
+bitcoin-cli signrawtransactionwithkey "hex" '["privkey1","privkey2"]'
+
+# Broadcast
+bitcoin-cli sendrawtransaction "signed_hex"
+```
+
+**Custom Tools**:
+- Follow Muun's published recovery specs
+- Test with small amounts first
+- Verify against official tool's output
+
+## Special Recovery Cases
+
+### Submarine Swap Recovery
+
+If you have pending submarine swaps during emergency recovery:
+
+```go
+// From submarineSwapV2.go:26
+func (c *coinSubmarineSwapV2) SignInput(index int, tx *wire.MsgTx,
+    userKey *HDPrivateKey, _ *HDPublicKey) error {
+    
+    if len(c.ServerSignature) == 0 {
+        return errors.New("swap server must provide signature")
+    }
+    // ...
+}
+```
+
+**Forward swaps** (sending to Lightning):
+- If before timeout: Cannot complete without server
+- If after timeout: Can reclaim to refund address (v1) or multisig (v2)
+- Wait for timeout, then sweep
+
+**Reverse swaps** (receiving from Lightning):
+- If you have the preimage: Can claim the HTLC
+- If you don't have preimage: Server will refund after timeout
+- Check Emergency Kit metadata for invoice data
+
+Source: `libwallet/submarineSwapV2.go:34-36`
+
+### Incoming Swap Recovery
+
+For Lightning payments received via submarine swaps:
+
+```go
+// From incoming_swap.go:238
+if len(c.Preimage) > 0 {
+    // Houston can provide preimage for collaborative recovery
+    secrets = &walletdb.Invoice{
+        Preimage: c.Preimage,
+        KeyPath:  invoiceBaseKeyPath,
+    }
+}
+```
+
+If invoice data was lost:
+- Emergency Kit may contain invoice metadata
+- If previously revealed, preimage may be recoverable
+- Otherwise, server can refund after timeout
+
+Source: `libwallet/incoming_swap.go:238-260`
+
+### Multi-Signature Coordination
+
+All recovery requires both keys because of 2-of-2 multisig:
+
+```go
+// From V2.go:53
+// This is a standard 2 of 2 multisig script
+// 0 because of a bug in bitcoind
+// Then the 2 sigs: first the users and then muuns
+// Last, the script that contains the two pub keys and OP_CHECKMULTISIG
+builder := txscript.NewScriptBuilder()
+builder.AddInt64(0)
+builder.AddData(sig)
+builder.AddData(c.MuunSignature)
+builder.AddData(redeemScript)
+```
+
+**Why Emergency Kit has both keys**:
+- Normal operation: User signs, Muun's server signs
+- Emergency: User signs with both (has both keys from Emergency Kit)
+- Fully self-sovereign: No dependency on Muun
+
+Source: `libwallet/V2.go:53-68`
+
+## Testing Your Recovery
+
+### Dry Run Recovery Test
+
+**Before an emergency**, test your recovery:
+
+1. **Small test wallet**: Create a wallet with a small amount
+2. **Export Emergency Kit**: Generate and save the PDF
+3. **Write recovery code**: Store securely
+4. **Uninstall app**: Remove from device
+5. **Recover**: Use recovery code to restore
+6. **Verify**: Confirm balance appears
+7. **Keep testing wallet**: Use it to practice emergency recovery later
+
+### Emergency Kit Verification
+
+Periodically verify your Emergency Kit:
+
+1. **Check PDF readability**: Ensure it's not corrupted
+2. **Verify verification code**: Match PDF to app
+3. **Test recovery code**: Confirm you can read what you wrote
+4. **Update if needed**: Regenerate if damaged
+
+<Warning>
+Don't wait for an emergency to discover your backup doesn't work. Test your recovery process with small amounts first.
+</Warning>
+
+## Security Considerations
+
+### What Can Go Wrong
+
+**Single Point of Failure Risks**:
+
+- ❌ Only digital Emergency Kit → Device failure loses it
+- ❌ Recovery code only in memory → Forgotten
+- ❌ Emergency Kit + recovery code together → Theft = total loss
+- ❌ Never tested recovery → Broken process discovered too late
+
+**Proper Redundancy**:
+
+- ✅ Multiple Emergency Kit copies (different locations)
+- ✅ Multiple recovery code copies (different locations)
+- ✅ Separate storage (never together)
+- ✅ Regular testing (know it works)
+
+### Privacy During Recovery
+
+Emergency recovery reveals:
+
+- All your addresses to the recovery tool
+- Your transaction history
+- Your balance
+
+Minimize privacy loss:
+- Run your own Bitcoin node for scanning
+- Use recovery tools locally (not web-based)
+- Sweep to a fresh wallet (don't reuse addresses)
+
+### Recovery Code vs. Seed Phrase
+
+Muun doesn't use standard BIP39 seed phrases:
+
+| Feature | Muun Recovery Code | BIP39 Seed |
+|---------|-------------------|------------|
+| Format | Custom versioned | 12/24 words |
+| Compatibility | Muun only | Many wallets |
+| Decrypts | Emergency Kit | Direct key |
+| Upgradeable | Yes (versioned) | No |
+| Emergency use | Requires EK PDF | Self-contained |
+
+**Why Muun's approach**:
+- Allows protocol upgrades
+- Supports collaborative custody
+- Enables Emergency Kit encryption
+- Maintains compatibility with future features
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Emergency Kit" icon="file-shield" href="/features/emergency-kit">
+    Detailed guide to Emergency Kit generation and contents
+  </Card>
+  <Card title="Multisig" icon="key" href="/features/multisig">
+    Why recovery requires both multisig keys
+  </Card>
+  <Card title="Security Cards" icon="credit-card" href="/features/security-cards">
+    Using NFC cards as additional recovery factor
+  </Card>
+  <Card title="Submarine Swaps" icon="arrow-right-arrow-left" href="/features/submarine-swaps">
+    Recovering funds from submarine swaps
+  </Card>
+</CardGroup>

@@ -1,0 +1,208 @@
+---
+title: 'Diagnostic Mode APIs'
+description: 'Diagnostic session management, UTXO scanning, and sweep transaction operations'
+---
+
+## Overview
+
+Diagnostic Mode provides a set of APIs for troubleshooting wallet issues, scanning for UTXOs, and performing sweep transactions. Each diagnostic operation is scoped to a session identified by a unique session ID.
+
+## Diagnostic Session Flow
+
+A typical diagnostic session follows this workflow:
+
+1. **Start Session** - Create a new diagnostic session and receive a session descriptor
+2. **Scan for UTXOs** - Perform a blockchain scan to discover unspent outputs
+3. **Submit Logs** - Upload diagnostic logs for analysis (optional)
+4. **Prepare Sweep** - Create a sweep transaction to consolidate funds
+5. **Sign & Broadcast** - Sign and broadcast the sweep transaction
+
+## Session Management
+
+### StartDiagnosticSession
+
+Initiate a new diagnostic session. This creates a session with a unique ID, logger, and buffer for collecting diagnostic data.
+
+**Request:** `google.protobuf.Empty`
+
+**Response:** `DiagnosticSessionDescriptor`
+
+<ResponseField name="session_id" type="string">
+  Unique identifier for the diagnostic session. Use this ID in all subsequent diagnostic operations.
+</ResponseField>
+
+**Example:**
+
+```proto
+rpc StartDiagnosticSession(google.protobuf.Empty) 
+  returns (DiagnosticSessionDescriptor);
+```
+
+**Session Data Structure:**
+
+Each session maintains:
+- **ID**: Unique session identifier
+- **LogBuffer**: In-memory buffer for diagnostic logs
+- **Logger**: Structured logger for the session
+- **LastScanReport**: Results from the most recent UTXO scan
+- **SweepTx**: Prepared sweep transaction (if created)
+
+## UTXO Scanning
+
+### PerformDiagnosticScanForUtxos
+
+Perform a blockchain scan to discover unspent transaction outputs (UTXOs) associated with the wallet. Returns a streaming response with real-time progress updates.
+
+**Request:** `DiagnosticSessionDescriptor`
+
+<ParamField path="session_id" type="string" required>
+  The session ID returned by StartDiagnosticSession
+</ParamField>
+
+**Response:** `stream ScanProgressUpdate`
+
+The stream returns one of two update types:
+
+<ResponseField name="found_utxo_report" type="FoundUtxoReport">
+  Report of a discovered UTXO during the scan
+  
+  <ResponseField name="address" type="string">
+    Bitcoin address where the UTXO was found
+  </ResponseField>
+  
+  <ResponseField name="amount" type="int64">
+    Amount in satoshis
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="scan_complete" type="ScanComplete">
+  Indicates that the scan has finished
+  
+  <ResponseField name="status" type="string">
+    Status message describing the scan completion
+  </ResponseField>
+</ResponseField>
+
+**Example:**
+
+```proto
+rpc PerformDiagnosticScanForUtxos(DiagnosticSessionDescriptor) 
+  returns (stream ScanProgressUpdate);
+```
+
+## Log Submission
+
+### SubmitDiagnosticLog
+
+Submit the diagnostic logs collected during the session to the server for analysis.
+
+**Request:** `DiagnosticSessionDescriptor`
+
+<ParamField path="session_id" type="string" required>
+  The session ID for which to submit logs
+</ParamField>
+
+**Response:** `DiagnosticSubmitStatus`
+
+<ResponseField name="status_code" type="int64">
+  HTTP-style status code indicating submission result (e.g., 200 for success)
+</ResponseField>
+
+<ResponseField name="status_message" type="string">
+  Human-readable status message
+</ResponseField>
+
+## Sweep Transaction Operations
+
+### PrepareSweepTx
+
+Prepare a sweep transaction that consolidates all discovered UTXOs to a destination address. This creates the transaction but does not sign or broadcast it.
+
+**Request:** `PrepareSweepTxRequest`
+
+<ParamField path="sessionDescriptor" type="DiagnosticSessionDescriptor" required>
+  The diagnostic session descriptor
+</ParamField>
+
+<ParamField path="destinationAddress" type="string" required>
+  Bitcoin address where funds will be swept
+</ParamField>
+
+<ParamField path="feeRateInSatsPerVByte" type="double" required>
+  Fee rate in satoshis per virtual byte (vByte)
+</ParamField>
+
+**Response:** `PrepareSweepTxResponse`
+
+<ResponseField name="sessionDescriptor" type="DiagnosticSessionDescriptor">
+  The session descriptor (echoed back)
+</ResponseField>
+
+<ResponseField name="destinationAddress" type="string">
+  The destination address (echoed back)
+</ResponseField>
+
+<ResponseField name="txSizeInBytes" type="int64">
+  Size of the prepared transaction in bytes
+</ResponseField>
+
+<ResponseField name="txTotalFee" type="int64">
+  Total transaction fee in satoshis
+</ResponseField>
+
+---
+
+### SignAndBroadcastSweepTx
+
+Sign and broadcast the previously prepared sweep transaction to the Bitcoin network.
+
+**Request:** `SignAndBroadcastSweepTxRequest`
+
+<ParamField path="sessionDescriptor" type="DiagnosticSessionDescriptor" required>
+  The diagnostic session descriptor
+</ParamField>
+
+<ParamField path="recoveryCode" type="string" required>
+  Recovery code required to sign the transaction
+</ParamField>
+
+**Response:** `SignAndBroadcastSweepTxResponse`
+
+<ResponseField name="sessionDescriptor" type="DiagnosticSessionDescriptor">
+  The session descriptor (echoed back)
+</ResponseField>
+
+<ResponseField name="txid" type="string">
+  Transaction ID of the broadcast transaction
+</ResponseField>
+
+## Session Lifecycle
+
+Diagnostic sessions are stored in an in-memory map and persist for the lifetime of the application or until explicitly deleted.
+
+**Session Operations:**
+
+- `AddDiagnosticSession(data)` - Add a new session
+- `GetDiagnosticSession(id)` - Retrieve session by ID
+- `DeleteDiagnosticSession(id)` - Remove session from memory
+
+**Session Validation:**
+
+Attempting to create a session with an existing ID will return an error. Each session ID must be unique.
+
+## Error Handling
+
+Diagnostic operations may fail with standard WalletService errors. Common error scenarios:
+
+- **Invalid Session ID**: Session not found or expired
+- **Scan Failed**: Unable to complete blockchain scan
+- **Transaction Preparation Failed**: Insufficient funds or invalid destination address
+- **Signing Failed**: Invalid recovery code or signing error
+- **Broadcast Failed**: Network error or transaction rejected by network
+
+See [WalletService Error Handling](/api/wallet-service#error-handling) for error structure details.
+
+## Source References
+
+- Protobuf definition: `libwallet/presentation/api/wallet_service.proto:18-22`
+- Session management: `libwallet/domain/diagnostic_mode/diagnostic_session_data.go`

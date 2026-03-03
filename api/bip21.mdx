@@ -1,0 +1,202 @@
+---
+title: BIP21 URI Handling
+description: Bitcoin URI generation and parsing implementation following BIP21 standard
+---
+
+## Overview
+
+The BIP21 implementation in libwallet handles Bitcoin payment URIs that can contain both on-chain addresses and Lightning invoices. This unified URI format enables seamless payment requests across both Bitcoin layers.
+
+<Note>
+BIP21 is defined in [Bitcoin Improvement Proposal 21](https://github.com/bitcoin/bips/blob/master/bip-0021.mediawiki) which describes a URI scheme for making Bitcoin payments.
+</Note>
+
+## MuunPaymentURI Structure
+
+The `MuunPaymentURI` struct represents a parsed or generated payment URI:
+
+```go
+type MuunPaymentURI struct {
+    Address      string    // On-chain Bitcoin address
+    Label        string    // Label for the address
+    Message      string    // Message describing the payment
+    Amount       string    // Amount in BTC (decimal format)
+    Uri          string    // Complete URI string
+    Bip70Url     string    // BIP70 payment protocol URL (deprecated)
+    CreationTime string    // Timestamp when created
+    ExpiresTime  string    // Expiration timestamp
+    Invoice      *Invoice  // Lightning invoice (if present)
+}
+```
+
+## URI Generation
+
+Generate a BIP21 URI from a `MuunPaymentURI` structure:
+
+```go
+// Basic on-chain address
+uri := &MuunPaymentURI{
+    Address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+    Amount:  "0.001",
+}
+
+bip21Uri, err := GenerateBip21Uri(uri)
+// Returns: "bitcoin:bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh?amount=0.001"
+```
+
+### Unified BIP21 with Lightning
+
+Combine on-chain and Lightning payment options in a single URI:
+
+```go
+uri := &MuunPaymentURI{
+    Address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+    Amount:  "0.001",
+    Invoice: &Invoice{
+        RawInvoice: "lnbc10u1p3...",
+        Sats:       100000,  // Must match amount
+    },
+}
+
+bip21Uri, err := GenerateBip21Uri(uri)
+// Returns: "bitcoin:bc1q...?amount=0.001&lightning=lnbc10u1p3..."
+```
+
+## URI Parsing
+
+Parse a Bitcoin URI string into a structured format:
+
+```go
+rawUri := "bitcoin:bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh?amount=0.001&lightning=lnbc..."
+network := Mainnet()
+
+paymentUri, err := GetPaymentURI(rawUri, network)
+if err != nil {
+    // Handle parsing error
+}
+
+// Access parsed components
+address := paymentUri.Address
+amount := paymentUri.Amount
+if paymentUri.Invoice != nil {
+    invoice := paymentUri.Invoice.RawInvoice
+}
+```
+
+## Implementation Details
+
+### URI Format
+
+The generated URI follows this structure:
+
+```
+bitcoin:<address>?<parameters>
+```
+
+Supported parameters:
+- `amount` - Payment amount in BTC (decimal notation)
+- `lightning` - Lightning invoice for the payment
+- `label` - Short label for the address
+- `message` - Message describing the payment
+
+### Amount Validation
+
+When both on-chain amount and Lightning invoice amount are present, they must match:
+
+```go
+// Source: libwallet/bip21.go:20-25
+if uri.Invoice.Sats != 0 && uri.Amount != "" {
+    invoiceAmount := decimal.NewFromInt(uri.Invoice.Sats)
+        .Div(decimal.NewFromInt(100_000_000))
+        .String()
+    if invoiceAmount != uri.Amount {
+        return "", errors.New(ErrInvalidURI, "Amount mismatch")
+    }
+}
+```
+
+### Address Requirement
+
+BIP21 URIs must include an on-chain address:
+
+```go
+if uri.Address == "" {
+    return "", errors.New(ErrInvalidURI, 
+        "On chain address is required for bip21 uris")
+}
+```
+
+<Note>
+Even when using Lightning as the primary payment method, a fallback on-chain address is required by the BIP21 standard.
+</Note>
+
+## Error Handling
+
+The implementation returns errors for:
+
+1. **Missing Address**: BIP21 URIs require an on-chain address
+2. **Amount Mismatch**: Invoice amount must match URI amount if both are specified
+3. **Invalid URI Format**: Malformed URI strings fail parsing
+4. **Invalid Amount**: Non-numeric or malformed amounts (NaN, Infinity)
+
+## Usage Examples
+
+### Generate Simple Payment Request
+
+```go
+func createPaymentRequest(address string, amountBTC string) (string, error) {
+    uri := &MuunPaymentURI{
+        Address: address,
+        Amount:  amountBTC,
+        Label:   "Payment to Merchant",
+        Message: "Order #12345",
+    }
+    
+    return GenerateBip21Uri(uri)
+}
+```
+
+### Parse and Validate URI
+
+```go
+func validatePaymentURI(rawUri string) (*MuunPaymentURI, error) {
+    network := Mainnet()
+    
+    paymentUri, err := GetPaymentURI(rawUri, network)
+    if err != nil {
+        return nil, fmt.Errorf("invalid payment URI: %w", err)
+    }
+    
+    // Validate address for network
+    if !IsValidAddress(paymentUri.Address, network) {
+        return nil, errors.New("invalid address for network")
+    }
+    
+    return paymentUri, nil
+}
+```
+
+### Create Unified Payment Option
+
+```go
+func createUnifiedPayment(address string, invoice *Invoice) (string, error) {
+    // Extract amount from invoice
+    amountBTC := decimal.NewFromInt(invoice.Sats)
+        .Div(decimal.NewFromInt(100_000_000))
+        .String()
+    
+    uri := &MuunPaymentURI{
+        Address: address,
+        Amount:  amountBTC,
+        Invoice: invoice,
+    }
+    
+    return GenerateBip21Uri(uri)
+}
+```
+
+## See Also
+
+- [Invoice API](/api/invoice) - Lightning invoice handling
+- [Address API](/api/address) - Bitcoin address validation
+- [LNURL Protocol](/api/lnurl) - Lightning URL protocol support

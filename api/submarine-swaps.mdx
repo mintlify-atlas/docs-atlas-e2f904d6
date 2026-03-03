@@ -1,0 +1,524 @@
+---
+title: 'Submarine Swaps'
+description: 'Lightning to on-chain submarine swap APIs'
+icon: 'arrow-right-arrow-left'
+---
+
+## Overview
+
+Submarine swaps enable trustless conversion from Lightning Network payments to on-chain Bitcoin. The libwallet implementation supports two versions: V1 (legacy) and V2 (current), each with different script structures and security models.
+
+## SubmarineSwap Interface
+
+Defines the common interface for submarine swap operations.
+
+```go
+type SubmarineSwap interface {
+    Invoice() string
+    Receiver() SubmarineSwapReceiver
+    FundingOutput() SubmarineSwapFundingOutput
+    PreimageInHex() string
+}
+```
+
+<ParamField path="Invoice" type="string">
+  Lightning invoice being paid
+</ParamField>
+
+<ParamField path="Receiver" type="SubmarineSwapReceiver">
+  Recipient information
+</ParamField>
+
+<ParamField path="FundingOutput" type="SubmarineSwapFundingOutput">
+  On-chain output details
+</ParamField>
+
+<ParamField path="PreimageInHex" type="string">
+  Payment preimage (hex encoded)
+</ParamField>
+
+## SubmarineSwapReceiver Interface
+
+```go
+type SubmarineSwapReceiver interface {
+    Alias() string
+    PublicKey() string
+}
+```
+
+<ParamField path="Alias" type="string">
+  Recipient node alias
+</ParamField>
+
+<ParamField path="PublicKey" type="string">
+  Recipient node public key (hex)
+</ParamField>
+
+## SubmarineSwapFundingOutput Interface
+
+```go
+type SubmarineSwapFundingOutput interface {
+    ScriptVersion() int64
+    OutputAddress() string
+    OutputAmount() int64
+    ConfirmationsNeeded() int
+    ServerPaymentHashInHex() string
+    ServerPublicKeyInHex() string
+    UserLockTime() int64
+    
+    // V1 only
+    UserRefundAddress() MuunAddress
+    
+    // V2 only
+    ExpirationInBlocks() int64
+    UserPublicKey() *HDPublicKey
+    MuunPublicKey() *HDPublicKey
+}
+```
+
+<ParamField path="ScriptVersion" type="int64">
+  Script version (AddressVersionSwapsV1 or AddressVersionSwapsV2)
+</ParamField>
+
+<ParamField path="OutputAddress" type="string">
+  On-chain address to fund
+</ParamField>
+
+<ParamField path="OutputAmount" type="int64">
+  Amount to send on-chain in satoshis
+</ParamField>
+
+<ParamField path="ConfirmationsNeeded" type="int">
+  Required confirmations before swap completes
+</ParamField>
+
+<ParamField path="ServerPaymentHashInHex" type="string">
+  Payment hash from the Lightning invoice
+</ParamField>
+
+<ParamField path="ServerPublicKeyInHex" type="string">
+  Swap server's public key
+</ParamField>
+
+<ParamField path="UserLockTime" type="int64">
+  Block height when user can reclaim funds
+</ParamField>
+
+<ParamField path="UserRefundAddress" type="MuunAddress">
+  V1 only: Refund address for failed swaps
+</ParamField>
+
+<ParamField path="ExpirationInBlocks" type="int64">
+  V2 only: Blocks until expiration
+</ParamField>
+
+<ParamField path="UserPublicKey" type="*HDPublicKey">
+  V2 only: User's public key for swap
+</ParamField>
+
+<ParamField path="MuunPublicKey" type="*HDPublicKey">
+  V2 only: Muun's public key for swap
+</ParamField>
+
+## ValidateSubmarineSwap
+
+Validates a submarine swap against expected parameters.
+
+```go
+func ValidateSubmarineSwap(
+    rawInvoice string,
+    userPublicKey *HDPublicKey,
+    muunPublicKey *HDPublicKey,
+    swap SubmarineSwap,
+    originalExpirationInBlocks int64,
+    network *Network,
+) error
+```
+
+<ParamField path="rawInvoice" type="string" required>
+  Original Lightning invoice string
+</ParamField>
+
+<ParamField path="userPublicKey" type="*HDPublicKey" required>
+  User's HD public key
+</ParamField>
+
+<ParamField path="muunPublicKey" type="*HDPublicKey" required>
+  Muun's HD public key
+</ParamField>
+
+<ParamField path="swap" type="SubmarineSwap" required>
+  Swap data from server
+</ParamField>
+
+<ParamField path="originalExpirationInBlocks" type="int64" required>
+  Expected expiration in blocks
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  Network configuration
+</ParamField>
+
+**Returns:** `error` if validation fails  
+**Validates:**
+- Invoice matches swap invoice
+- Payment hash matches
+- Output address is correct
+- Amount matches invoice
+- Keys are properly derived
+- Expiration is as expected
+
+### Example
+
+```go
+err := ValidateSubmarineSwap(
+    "lnbc10u1p3pj257pp5yztkwjcz5ytjw...",
+    userPubKey,
+    muunPubKey,
+    swap,
+    144, // ~1 day expiration
+    Mainnet(),
+)
+if err != nil {
+    log.Fatalf("Swap validation failed: %v", err)
+}
+```
+
+## Submarine Swap V1
+
+### Script Structure
+
+V1 swaps use nested SegWit (P2SH-P2WSH) with a refund address.
+
+```go
+type coinSubmarineSwapV1 struct {
+    Network         *chaincfg.Params
+    OutPoint        wire.OutPoint
+    KeyPath         string
+    Amount          btcutil.Amount
+    RefundAddress   string
+    PaymentHash256  []byte
+    ServerPublicKey []byte
+    LockTime        int64
+}
+```
+
+### Witness Script
+
+The V1 witness script allows:
+1. **Server spend**: With payment preimage (happy path)
+2. **User refund**: After locktime expires
+
+```go
+witnessScript, err := swaps.CreateWitnessScriptSubmarineSwapV1(
+    refundAddress,
+    paymentHash256,
+    serverPublicKey,
+    lockTime,
+    network,
+)
+```
+
+### Signing V1 Swaps
+
+```go
+func (c *coinSubmarineSwapV1) SignInput(
+    index int,
+    tx *wire.MsgTx,
+    userKey *HDPrivateKey,
+    _ *HDPublicKey,
+) error
+```
+
+<ParamField path="index" type="int" required>
+  Input index to sign
+</ParamField>
+
+<ParamField path="tx" type="*wire.MsgTx" required>
+  Transaction to sign
+</ParamField>
+
+<ParamField path="userKey" type="*HDPrivateKey" required>
+  User's private key
+</ParamField>
+
+**Returns:** `error` if signing fails  
+**Note:** V1 swaps cannot be fully signed (server cooperation required)
+
+### Example: V1 Swap Refund
+
+```go
+// After locktime expires, user can reclaim funds
+coin := &coinSubmarineSwapV1{
+    Network:         network.network,
+    OutPoint:        outpoint,
+    KeyPath:         "m/schema:1'/recovery:1'/external:1/0",
+    Amount:          btcutil.Amount(100000),
+    RefundAddress:   "bc1q...",
+    PaymentHash256:  paymentHash,
+    ServerPublicKey: serverPubKey,
+    LockTime:        700000,
+}
+
+err := coin.SignInput(0, refundTx, userKey, nil)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Submarine Swap V2
+
+### Script Structure
+
+V2 swaps use native SegWit (P2WSH) with collaborative multisig.
+
+```go
+type coinSubmarineSwapV2 struct {
+    Network             *chaincfg.Params
+    OutPoint            wire.OutPoint
+    Amount              btcutil.Amount
+    KeyPath             string
+    PaymentHash256      []byte
+    UserPublicKey       []byte
+    MuunPublicKey       []byte
+    ServerPublicKey     []byte
+    BlocksForExpiration int64
+    ServerSignature     []byte
+}
+```
+
+### Witness Script
+
+The V2 witness script allows:
+1. **Collaborative spend**: User + Server signatures (happy path)
+2. **Refund spend**: User + Muun signatures after expiration
+
+```go
+witnessScript, err := swaps.CreateWitnessScriptSubmarineSwapV2(
+    paymentHash256,
+    userPublicKey,
+    muunPublicKey,
+    serverPublicKey,
+    blocksForExpiration,
+)
+```
+
+### Signing V2 Swaps
+
+```go
+func (c *coinSubmarineSwapV2) SignInput(
+    index int,
+    tx *wire.MsgTx,
+    userKey *HDPrivateKey,
+    _ *HDPublicKey,
+) error
+```
+
+<ParamField path="index" type="int" required>
+  Input index to sign
+</ParamField>
+
+<ParamField path="tx" type="*wire.MsgTx" required>
+  Transaction to sign
+</ParamField>
+
+<ParamField path="userKey" type="*HDPrivateKey" required>
+  User's private key
+</ParamField>
+
+**Returns:** `error` if signing fails  
+**Requires:** Server signature must be present in `ServerSignature` field
+
+### Example: V2 Swap with Server Signature
+
+```go
+// Server provides signature after invoice is paid
+coin := &coinSubmarineSwapV2{
+    Network:             network.network,
+    OutPoint:            outpoint,
+    Amount:              btcutil.Amount(100000),
+    KeyPath:             "m/schema:1'/recovery:1'/external:1/0",
+    PaymentHash256:      paymentHash,
+    UserPublicKey:       userPub,
+    MuunPublicKey:       muunPub,
+    ServerPublicKey:     serverPub,
+    BlocksForExpiration: 144,
+    ServerSignature:     serverSig, // Provided by swap server
+}
+
+err := coin.SignInput(0, tx, userKey, nil)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Version Comparison
+
+<CodeGroup>
+
+```go V1 (Legacy)
+// Nested SegWit
+// Uses refund address
+// Server OR User (after locktime)
+ScriptVersion: AddressVersionSwapsV1
+
+// Spend paths:
+// 1. Server + preimage (payment)
+// 2. User after locktime (refund)
+```
+
+```go V2 (Current)
+// Native SegWit
+// Uses multisig keys
+// Collaborative spend
+ScriptVersion: AddressVersionSwapsV2
+
+// Spend paths:
+// 1. User + Server (payment)
+// 2. User + Muun after expiration (refund)
+```
+
+</CodeGroup>
+
+## Transaction Lifecycle
+
+### Happy Path (Payment Successful)
+
+1. **User initiates swap**
+   - Provides Lightning invoice
+   - Receives funding output details
+
+2. **User funds output**
+   - Sends BTC to swap address
+   - Waits for confirmations
+
+3. **Server pays invoice**
+   - Obtains payment preimage
+   - V1: Claims with preimage
+   - V2: Provides signature
+
+4. **User claims funds**
+   - V2 only: Signs with server signature
+   - V1: Server claims directly
+
+### Refund Path (Payment Failed)
+
+1. **Payment fails or expires**
+   - Invoice expires
+   - Server doesn't pay
+
+2. **Locktime/expiration reached**
+   - V1: Absolute locktime block height
+   - V2: Relative expiration in blocks
+
+3. **User reclaims funds**
+   - V1: Signs refund to refund address
+   - V2: Signs with Muun (collaborative refund)
+
+## Error Handling
+
+Common errors during swap operations:
+
+```go
+// V2 specific
+if len(c.ServerSignature) == 0 {
+    return errors.New("swap server must provide signature")
+}
+
+// Cannot fully sign
+func FullySignInput(...) error {
+    return errors.New("cannot fully sign submarine swap transactions")
+}
+```
+
+## Security Considerations
+
+### V1 Security
+- User controls refund address private key
+- Locktime must be far enough in the future
+- Server can claim anytime with preimage
+- No Muun cooperation needed for refund
+
+### V2 Security
+- Requires Muun cooperation for refunds
+- More efficient (native SegWit)
+- Better privacy (looks like normal multisig)
+- Collaborative model reduces trust assumptions
+
+<Warning>
+V1 swaps are legacy and should not be used for new implementations. Use V2 for all new submarine swaps.
+</Warning>
+
+## Integration Example
+
+<CodeGroup>
+
+```go Complete V2 Swap Flow
+// 1. Validate swap details
+err := ValidateSubmarineSwap(
+    invoice,
+    userPub,
+    muunPub,
+    swap,
+    144,
+    Mainnet(),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 2. Fund the swap output
+// (implementation depends on wallet)
+
+// 3. Wait for server signature
+// (received via server API)
+
+// 4. Sign and broadcast claim transaction
+inputs := &InputList{}
+inputs.Add(swapInput)
+
+pst, err := NewPartiallySignedTransaction(
+    inputs,
+    claimTxBytes,
+    nil, // No nonces for V2
+)
+
+tx, err := pst.Sign(userKey, muunPub)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 5. Broadcast transaction
+// (implementation depends on wallet)
+```
+
+```go Refund After Expiration
+// After expiration, create refund transaction
+inputs := &InputList{}
+inputs.Add(swapInput)
+
+pst, err := NewPartiallySignedTransaction(
+    inputs,
+    refundTxBytes,
+    nil,
+)
+
+// Requires both user and Muun signatures
+tx, err := pst.FullySign(userKey, muunKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Broadcast refund
+```
+
+</CodeGroup>
+
+## Constants
+
+```go
+const (
+    AddressVersionSwapsV1 = addresses.SubmarineSwapV1
+    AddressVersionSwapsV2 = addresses.SubmarineSwapV2
+)
+```

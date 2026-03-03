@@ -1,0 +1,194 @@
+---
+title: "Libwallet Overview"
+description: "Core wallet library that powers Muun's mobile applications"
+---
+
+## What is Libwallet?
+
+Libwallet is Muun's core wallet library written in Go. It serves as the foundation for Muun's non-custodial 2-of-2 multisig wallet, implementing critical cryptographic operations, transaction handling, and Bitcoin protocol logic.
+
+<Info>
+Libwallet is shared across multiple platforms through [gomobile](https://godoc.org/golang.org/x/mobile/cmd/gomobile), enabling code reuse between Android and iOS applications.
+</Info>
+
+## Architecture
+
+Libwallet acts as a bridge between the mobile applications and the Bitcoin network, providing:
+
+- **Cryptographic Operations**: Key derivation, signing, and encryption
+- **Transaction Management**: Building, signing, and analyzing Bitcoin transactions
+- **Submarine Swaps**: Lightning Network integration through submarine swap protocols
+- **Recovery Tools**: Wallet recovery and backup functionality
+- **Network Operations**: Communication with Muun's backend services
+
+## Key Components
+
+### Bridge Layer
+
+The bridge layer (`bridge.go`) provides mobile-friendly data structures that work with gomobile's limitations:
+
+```go
+// StringList provides a gomobile-compatible string collection
+type StringList struct {
+    elems []string
+}
+
+func NewStringList() *StringList {
+    return &StringList{}
+}
+
+func (l *StringList) Add(s string) {
+    l.elems = append(l.elems, s)
+}
+```
+
+<Note>
+Gomobile has limitations with complex Go types. The bridge layer wraps standard Go types into structures that can be exported to mobile platforms.
+</Note>
+
+### Initialization
+
+Libwallet must be initialized before use through the `Init` function (`init.go:10`):
+
+```go
+func Init(c *app_provided_data.Config) {
+    Cfg = c
+}
+```
+
+This allows the mobile application to provide platform-specific configuration data to the core library.
+
+## Core Functionality
+
+### Transaction Operations
+
+Libwallet handles all transaction-related operations including:
+
+- Building and signing transactions
+- Fee calculation and bump operations
+- Partially Signed Bitcoin Transactions (PSBT) support
+- Multi-signature transaction coordination
+
+### Key Management
+
+The library implements hierarchical deterministic (HD) wallet functionality:
+
+- BIP32 key derivation
+- BIP39 mnemonic generation and recovery
+- Challenge-response authentication for security cards
+- Multi-party computation for 2-of-2 signatures
+
+### Lightning Network Support
+
+Libwallet provides submarine swap functionality for Lightning Network integration:
+
+- Submarine swap protocol v1 and v2
+- Invoice handling and payment routing
+- Swap state management and recovery
+
+### Address Generation
+
+Supports multiple address formats:
+
+- Legacy addresses
+- SegWit (P2WPKH, P2WSH)
+- Taproot addresses
+- BIP21 URI parsing and generation
+
+## Platform Integration
+
+Libwallet is used by:
+
+1. **Mobile Wallets**: Android and iOS applications via gomobile
+2. **Recovery Tool**: Standalone recovery application for emergency wallet access
+3. **Testing Infrastructure**: Comprehensive test suite for wallet operations
+
+<Info>
+The library is designed to be platform-agnostic, with platform-specific code isolated in the bridge layer and app-provided data structures.
+</Info>
+
+## Security Features
+
+### Non-Custodial Architecture
+
+Libwallet implements a 2-of-2 multisig scheme where:
+
+- User holds one key on their device
+- Muun holds one key on secure servers
+- Both signatures required for transactions
+- User maintains full control through recovery mechanisms
+
+### Encryption
+
+The library provides:
+
+- AES encryption for sensitive data
+- HMAC-based authentication
+- Secure key derivation using scrypt
+- Hardware-backed key storage integration
+
+### Recovery Mechanisms
+
+Multiple recovery options ensure users never lose access:
+
+- Recovery code generation and validation
+- Emergency kit functionality
+- Security card challenge-response system
+
+## Dependencies
+
+Libwallet builds upon several key dependencies:
+
+- **btcsuite**: Bitcoin protocol implementation
+- **btcd**: Bitcoin full node reference implementation
+- **golang.org/x/mobile**: Cross-platform mobile binding
+- **librs**: Rust libraries for performance-critical operations
+
+<Note>
+Before building libwallet, you must run `librs/makelibs.sh` to compile the Rust dependencies.
+</Note>
+
+## Development Setup
+
+To work with libwallet locally:
+
+1. Install [Go](https://golang.org/)
+2. Install [Docker](https://docs.docker.com/engine/install/)
+3. Build Rust libraries: `librs/makelibs.sh`
+4. Build the library: `go build -mod=vendor .`
+
+```bash
+# Build libwallet
+cd libwallet
+./librs/makelibs.sh
+go build -mod=vendor .
+```
+
+## Repository Structure
+
+```
+libwallet/
+├── addresses/          # Address generation and validation
+├── btcsuitew/         # Bitcoin suite wrappers
+├── challenge_keys.go  # Security card authentication
+├── bridge.go          # Mobile bridge layer
+├── init.go            # Library initialization
+├── newop/             # New operation handling
+├── operation/         # Transaction operations
+├── recoverycode/      # Recovery code generation
+├── service/           # Backend service communication
+├── storage/           # Local storage layer
+├── submarineSwap*.go  # Lightning swap implementation
+└── walletdb/          # Wallet database
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Gomobile Integration" icon="mobile" href="/api/gomobile-integration">
+    Learn how libwallet is built for mobile platforms
+  </Card>
+  <Card title="Recovery Tool" icon="life-ring" href="https://github.com/muun/recovery">
+    Explore the wallet recovery implementation
+  </Card>
+</CardGroup>

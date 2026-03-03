@@ -1,0 +1,357 @@
+---
+title: Security auditing
+description: Guide to auditing Muun Wallet's security-critical components
+---
+
+## Overview
+
+Muun Wallet is designed with security auditability as a core principle. The open-source codebase and clean architecture make it straightforward to verify the wallet's security properties. This guide helps security researchers and developers audit the most critical components.
+
+## Why audit Muun?
+
+Muun handles sensitive operations:
+- **Private key management**: HD key derivation and storage
+- **Transaction signing**: 2-of-2 multisig with server coordination  
+- **Cryptographic operations**: ECDSA, ECDH, AES, scrypt
+- **Recovery mechanisms**: Emergency kit and challenge keys
+- **Network communication**: TLS-protected API calls
+
+Auditing these components helps ensure:
+- Keys cannot be extracted or compromised
+- Transactions are signed only as intended
+- Recovery mechanisms work reliably
+- No backdoors or vulnerabilities exist
+
+## Audit focus areas
+
+Based on Muun's security architecture, prioritize these areas:
+
+### 1. Key handling and transaction crafting
+
+**Location**: `common` module
+
+**What to audit**:
+- HD key derivation paths and logic
+- Transaction input/output construction  
+- Signature generation and verification
+- Multisig script creation
+- Address generation for all versions (V1-V6)
+
+**Key files**:
+```
+common/src/main/java/io/muun/common/crypto/
+common/src/main/java/io/muun/common/crypto/hd/
+```
+
+**Questions to answer**:
+- Are derivation paths validated correctly?
+- Can transaction outputs be manipulated?
+- Are signatures verified before broadcasting?
+- Do multisig scripts match specifications?
+
+<Note>
+Most cryptographic operations happen in the `common` module, which is pure Java with no Android dependencies, making it easier to audit and test.
+</Note>
+
+### 2. Keystore and data handling
+
+**Location**: `data` layer in Android app
+
+**What to audit**:
+- Private key storage mechanisms
+- Android Keystore integration
+- Encrypted SharedPreferences usage
+- Database encryption (SQLCipher)
+- Secure data wiping
+
+**Key files**:
+```
+android/apolloui/src/main/java/io/muun/apollo/data/secure/
+android/apolloui/src/main/java/io/muun/apollo/data/preferences/
+android/apolloui/src/main/java/io/muun/apollo/data/db/
+```
+
+**Questions to answer**:
+- Are private keys stored only in Android Keystore?
+- Is sensitive data encrypted at rest?
+- Are cryptographic keys properly isolated?
+- Can data be recovered from device storage?
+
+### 3. Business logic and signing decisions
+
+**Location**: `domain` layer in Android app
+
+**What to audit**:
+- Transaction authorization logic
+- Multisig coordination with server
+- Fee calculation and validation  
+- Submarine swap verification
+- Emergency recovery workflows
+
+**Key files**:
+```
+android/apolloui/src/main/java/io/muun/apollo/domain/action/
+android/apolloui/src/main/java/io/muun/apollo/domain/model/
+```
+
+**Questions to answer**:
+- Can users be tricked into signing unintended transactions?
+- Are fee calculations resistant to manipulation?
+- Do submarine swaps verify HTLCs correctly?
+- Can recovery be performed without server?
+
+### 4. Network communication
+
+**Location**: `data` layer, Houston client
+
+**What to audit**:
+- API authentication mechanisms
+- TLS certificate pinning
+- Request/response validation
+- Replay attack protection
+- Rate limiting
+
+**Key files**:
+```
+android/apolloui/src/main/java/io/muun/apollo/data/net/
+android/apolloui/src/main/java/io/muun/apollo/data/apis/
+```
+
+**Questions to answer**:
+- Are all API calls authenticated?
+- Is certificate pinning properly implemented?
+- Can responses be tampered with?
+- Are nonces used to prevent replay attacks?
+
+## Libwallet core library
+
+The `libwallet` library (written in Go) contains critical cryptographic operations used by both Android and iOS wallets.
+
+**Location**: `libwallet/` directory
+
+**Key components to audit**:
+
+### Address generation
+```
+libwallet/address.go
+libwallet/addresses/v*.go
+```
+
+### Transaction signing
+```
+libwallet/partiallysignedtransaction.go
+```
+
+### Key derivation
+```
+libwallet/hdprivatekey.go
+libwallet/hdpublickey.go
+```
+
+### Challenge keys
+```
+libwallet/challenge_keys.go
+libwallet/challenge_public_key.go
+```
+
+### Encryption
+```
+libwallet/encrypt.go
+libwallet/keycrypter.go
+```
+
+### Submarine swaps
+```
+libwallet/incoming_swap.go
+libwallet/submarineSwap*.go
+```
+
+<Warning>
+**Important**: Libwallet is used via gomobile bindings. Verify that type conversions and error handling across the FFI boundary are correct.
+</Warning>
+
+## Architectural security guarantees
+
+Muun's clean architecture provides security benefits:
+
+### Layer isolation
+
+- **Presentation layer** never directly accesses sensitive data
+- **Domain layer** enforces business rules before data access
+- **Data layer** encapsulates all storage and network operations
+
+This ensures UI code cannot bypass security checks.
+
+### Dependency direction
+
+```
+Presentation → Domain → Data
+               ↓
+            Libwallet
+```
+
+Dependencies flow inward, making it impossible for:
+- UI to access keystore directly
+- Network code to bypass transaction validation
+- Database to influence signing logic
+
+### Testability
+
+Each layer is independently testable:
+
+```
+android/apolloui/src/test/          # Unit tests
+android/apolloui/src/androidTest/   # Instrumentation tests
+libwallet/*_test.go                 # Go unit tests
+```
+
+Review tests to understand expected behavior and edge cases.
+
+## Audit methodology
+
+### Static analysis
+
+1. **Review crypto usage**: Verify algorithms match specifications
+2. **Check key management**: Trace key lifecycle from generation to destruction
+3. **Analyze data flows**: Follow sensitive data through the app
+4. **Validate inputs**: Ensure all external inputs are validated
+5. **Inspect error handling**: Verify errors don't leak sensitive info
+
+### Dynamic analysis
+
+1. **Run test suite**: Ensure all tests pass
+2. **Fuzz inputs**: Test with malformed data
+3. **Monitor memory**: Check for key material in memory dumps
+4. **Intercept network**: Verify TLS and certificate pinning
+5. **Test recovery**: Verify emergency recovery works
+
+### Tools and techniques
+
+**For Java/Kotlin code**:
+- Android Studio debugger
+- FindBugs/SpotBugs for static analysis
+- Frida for dynamic instrumentation
+
+**For Go code**:
+- `go test -race`: Detect race conditions
+- `go vet`: Static analysis
+- Delve debugger
+
+**For Android app**:
+- ADB logcat for runtime logs
+- Charles Proxy for network inspection
+- APK decompilation with jadx
+
+## Common vulnerabilities to check
+
+### Key management issues
+
+- [ ] Private keys logged or printed
+- [ ] Keys stored in SharedPreferences without encryption
+- [ ] Keys transmitted over network
+- [ ] Weak key derivation (insufficient entropy)
+- [ ] Keys not cleared from memory after use
+
+### Cryptographic pitfalls
+
+- [ ] Weak random number generation
+- [ ] Hardcoded IVs or salts
+- [ ] ECB mode instead of CBC/GCM
+- [ ] Missing MAC authentication
+- [ ] Nonce reuse in MuSig2 signing
+
+### Transaction signing bugs
+
+- [ ] Insufficient input validation
+- [ ] Fee calculation overflow/underflow  
+- [ ] Change address substitution
+- [ ] Signature malleability
+- [ ] SIGHASH flag manipulation
+
+### Network security
+
+- [ ] Missing certificate pinning
+- [ ] Insecure TLS configuration
+- [ ] Unvalidated server responses
+- [ ] Missing replay attack protection
+- [ ] API keys in source code
+
+## Reproducible builds
+
+Muun supports reproducible builds, allowing verification that published APKs match source code:
+
+```bash
+# Build reproducibly using Docker
+DOCKER_BUILDKIT=1 docker build -f android/Dockerfile -o apk .
+
+# Verify an existing APK
+tools/verify-apollo.sh path/to/apollo.apk
+```
+
+See [Reproducible Builds](/development/reproducible-builds) for details.
+
+<Info>
+Reproducible builds are essential for auditing. They prove that the binary users download corresponds exactly to the audited source code.
+</Info>
+
+## Reporting security issues
+
+If you discover a security vulnerability:
+
+1. **Do not** open a public GitHub issue
+2. **Email** security@muun.com with details
+3. **Use PGP** if sending sensitive information:
+   ```
+   Fingerprint: 1299 28C1 E79F E011 6DA4 C80F 8DB7 FD0F 61E6 ED76
+   ```
+4. **Allow time** for the team to respond and fix
+5. **Coordinate disclosure** after fix is deployed
+
+See [Responsible Disclosure](/reference/responsible-disclosure) for full policy.
+
+## Audit checklist
+
+Use this checklist when performing a security audit:
+
+### Pre-audit
+- [ ] Clone repository and verify git signatures
+- [ ] Build from source and run test suites
+- [ ] Set up reproducible build environment
+- [ ] Review architecture documentation
+
+### Code review
+- [ ] Audit key management in `common` module
+- [ ] Review keystore integration in `data` layer
+- [ ] Analyze signing logic in `domain` layer
+- [ ] Inspect libwallet cryptographic operations
+- [ ] Check network security and TLS usage
+
+### Testing
+- [ ] Run static analysis tools
+- [ ] Perform dynamic analysis with instrumentation
+- [ ] Fuzz test critical input handlers
+- [ ] Test recovery and backup mechanisms
+- [ ] Verify reproducible build matches published APK
+
+### Documentation
+- [ ] Document findings with severity ratings
+- [ ] Provide proof-of-concept for vulnerabilities
+- [ ] Suggest remediation for each issue
+- [ ] Coordinate disclosure timeline
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Key Management" icon="key" href="/security/key-management">
+    HD key management details
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Clean architecture overview
+  </Card>
+  <Card title="Reproducible Builds" icon="docker" href="/development/reproducible-builds">
+    Build verification process
+  </Card>
+  <Card title="Responsible Disclosure" icon="shield-exclamation" href="/reference/responsible-disclosure">
+    Security reporting policy
+  </Card>
+</CardGroup>

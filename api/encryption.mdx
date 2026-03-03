@@ -1,0 +1,486 @@
+---
+title: "Encryption & Cryptography"
+description: "Encryption, decryption, and cryptographic utilities for secure key management"
+---
+
+## Overview
+
+The encryption APIs provide secure cryptographic operations for Muun Wallet, including:
+
+- **ECDH-based encryption**: Using elliptic curve Diffie-Hellman for key agreement
+- **AES-CBC encryption**: With PKCS7 padding or no padding for fixed-size data
+- **Key encryption**: Password-based encryption using scrypt for key derivation
+- **HD key encryption/decryption**: Hierarchical deterministic key encryption support
+
+All encryption uses the secp256k1 elliptic curve (Bitcoin's curve) for ECDH key agreement and AES-256 for symmetric encryption.
+
+## Encryption Interfaces
+
+### Encrypter
+
+Interface for encrypting payloads.
+
+```go
+type Encrypter interface {
+    Encrypt(payload []byte) (string, error)
+}
+```
+
+#### Encrypt
+
+Encrypts data and returns a serialized string containing all information needed for decryption.
+
+<ParamField path="payload" type="[]byte" required>
+  The plaintext data to encrypt
+</ParamField>
+
+<ResponseField name="encrypted" type="string">
+  Serialized encrypted payload with metadata
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if encryption fails
+</ResponseField>
+
+### Decrypter
+
+Interface for decrypting payloads.
+
+```go
+type Decrypter interface {
+    Decrypt(payload string) ([]byte, error)
+}
+```
+
+#### Decrypt
+
+Decrypts a payload that was encrypted using an Encrypter.
+
+<ParamField path="payload" type="string" required>
+  The serialized encrypted payload
+</ParamField>
+
+<ResponseField name="plaintext" type="[]byte">
+  The decrypted data
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decryption fails or authentication fails
+</ResponseField>
+
+## HD Key Encryption
+
+### Encrypter Methods on HDPrivateKey
+
+#### Encrypter (Self-Encryption)
+
+Creates an encrypter that encrypts data to the same private key (self-encryption).
+
+```go
+func (p *HDPrivateKey) Encrypter() Encrypter
+```
+
+<ResponseField name="Encrypter" type="Encrypter">
+  An encrypter configured for self-encryption
+</ResponseField>
+
+**Use Case:** Encrypting data that only this wallet can decrypt.
+
+#### EncrypterTo
+
+Creates an encrypter that encrypts data to a different recipient's public key.
+
+```go
+func (p *HDPrivateKey) EncrypterTo(receiver *HDPublicKey) Encrypter
+```
+
+<ParamField path="receiver" type="*HDPublicKey" required>
+  The recipient's public key
+</ParamField>
+
+<ResponseField name="Encrypter" type="Encrypter">
+  An encrypter configured for the recipient
+</ResponseField>
+
+**Use Case:** Encrypting data that only the recipient can decrypt (like secure messaging).
+
+#### Decrypter (Self-Decryption)
+
+Creates a decrypter for data encrypted to this private key by itself.
+
+```go
+func (p *HDPrivateKey) Decrypter() Decrypter
+```
+
+<ResponseField name="Decrypter" type="Decrypter">
+  A decrypter configured for self-encrypted data
+</ResponseField>
+
+#### DecrypterFrom
+
+Creates a decrypter for data encrypted by a specific sender.
+
+```go
+func (p *HDPrivateKey) DecrypterFrom(sender *PublicKey) Decrypter
+```
+
+<ParamField path="sender" type="*PublicKey" required>
+  The sender's public key (can be nil for anonymous sender)
+</ParamField>
+
+<ResponseField name="Decrypter" type="Decrypter">
+  A decrypter configured for the sender
+</ResponseField>
+
+### Encryption Operations (Gomobile Compatibility)
+
+These wrapper types provide Gomobile-compatible encryption operations.
+
+#### NewEncryptOperation
+
+Creates an encryption operation for self-encryption.
+
+```go
+func NewEncryptOperation(key *HDPrivateKey, payload []byte) *EncryptOperation
+```
+
+<ParamField path="key" type="*HDPrivateKey" required>
+  The private key to encrypt with
+</ParamField>
+
+<ParamField path="payload" type="[]byte" required>
+  The data to encrypt
+</ParamField>
+
+<ResponseField name="EncryptOperation" type="*EncryptOperation">
+  An encryption operation ready to execute
+</ResponseField>
+
+#### EncryptOperation.Encrypt
+
+Executes the encryption operation.
+
+```go
+func (o *EncryptOperation) Encrypt() (string, error)
+```
+
+<ResponseField name="encrypted" type="string">
+  The encrypted payload
+</ResponseField>
+
+#### NewDecryptOperation
+
+Creates a decryption operation for self-encrypted data.
+
+```go
+func NewDecryptOperation(key *HDPrivateKey, payload string) *DecryptOperation
+```
+
+<ParamField path="key" type="*HDPrivateKey" required>
+  The private key to decrypt with
+</ParamField>
+
+<ParamField path="payload" type="string" required>
+  The encrypted payload
+</ParamField>
+
+<ResponseField name="DecryptOperation" type="*DecryptOperation">
+  A decryption operation ready to execute
+</ResponseField>
+
+#### NewDecryptOperationFrom
+
+Creates a decryption operation for data encrypted by a specific sender.
+
+```go
+func NewDecryptOperationFrom(sender *PublicKey, key *HDPrivateKey, payload string) *DecryptOperation
+```
+
+<ParamField path="sender" type="*PublicKey" required>
+  The sender's public key
+</ParamField>
+
+<ParamField path="key" type="*HDPrivateKey" required>
+  The private key to decrypt with
+</ParamField>
+
+<ParamField path="payload" type="string" required>
+  The encrypted payload
+</ParamField>
+
+<ResponseField name="DecryptOperation" type="*DecryptOperation">
+  A decryption operation ready to execute
+</ResponseField>
+
+#### DecryptOperation.Decrypt
+
+Executes the decryption operation.
+
+```go
+func (o *DecryptOperation) Decrypt() ([]byte, error)
+```
+
+<ResponseField name="plaintext" type="[]byte">
+  The decrypted data
+</ResponseField>
+
+## Low-Level Encryption Functions
+
+### encryptWithPubKey
+
+Low-level ECDH encryption using a public key.
+
+```go
+func encryptWithPubKey(pubKey *btcec.PublicKey, plaintext []byte) (*btcec.PublicKey, []byte, error)
+```
+
+<ParamField path="pubKey" type="*btcec.PublicKey" required>
+  The recipient's public key
+</ParamField>
+
+<ParamField path="plaintext" type="[]byte" required>
+  The data to encrypt (must be AES block size aligned for no-padding mode)
+</ParamField>
+
+<ResponseField name="ephemeralPublicKey" type="*btcec.PublicKey">
+  The ephemeral public key generated for this encryption
+</ResponseField>
+
+<ResponseField name="ciphertext" type="[]byte">
+  The encrypted data
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if encryption fails
+</ResponseField>
+
+**Algorithm:**
+1. Generate ephemeral key pair (privEph, pubEph)
+2. Compute shared secret: ECDH(privEph, pubKey)
+3. Use last 16 bytes of compressed pubEph as IV
+4. Encrypt using AES-256-CBC with no padding (plaintext must be block-aligned)
+
+### decryptWithPrivKey
+
+Low-level ECDH decryption using a private key.
+
+```go
+func decryptWithPrivKey(privKey *btcec.PrivateKey, rawPubEph []byte, ciphertext []byte) ([]byte, error)
+```
+
+<ParamField path="privKey" type="*btcec.PrivateKey" required>
+  The recipient's private key
+</ParamField>
+
+<ParamField path="rawPubEph" type="[]byte" required>
+  The ephemeral public key (33 bytes compressed)
+</ParamField>
+
+<ParamField path="ciphertext" type="[]byte" required>
+  The encrypted data
+</ParamField>
+
+<ResponseField name="plaintext" type="[]byte">
+  The decrypted data
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decryption fails
+</ResponseField>
+
+**Algorithm:**
+1. Parse ephemeral public key from rawPubEph
+2. Recover shared secret: ECDH(privKey, pubEph)
+3. Use last 16 bytes of rawPubEph as IV
+4. Decrypt using AES-256-CBC with no padding
+
+## Key Encryption with Passphrase
+
+### KeyEncrypt
+
+Encrypts an HD private key using a passphrase. Uses scrypt for key derivation and AES-CBC-PKCS7 for encryption.
+
+```go
+func KeyEncrypt(privKey *HDPrivateKey, passphrase string) (string, error)
+```
+
+<ParamField path="privKey" type="*HDPrivateKey" required>
+  The HD private key to encrypt
+</ParamField>
+
+<ParamField path="passphrase" type="string" required>
+  The user's passphrase
+</ParamField>
+
+<ResponseField name="encrypted" type="string">
+  The encrypted key with version, path, and scrypt parameters encoded
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if encryption fails
+</ResponseField>
+
+**Format:** The returned string includes:
+- Version information
+- Derivation path
+- Scrypt parameters (N, r, p)
+- Salt for key derivation
+- AES IV
+- Ciphertext
+
+### KeyDecrypt
+
+Decrypts a key encrypted with KeyEncrypt.
+
+```go
+func KeyDecrypt(value, passphrase string, network *Network) (*DecryptedKey, error)
+```
+
+<ParamField path="value" type="string" required>
+  The encrypted key string from KeyEncrypt
+</ParamField>
+
+<ParamField path="passphrase" type="string" required>
+  The user's passphrase
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="DecryptedKey" type="*DecryptedKey">
+  The decrypted key with its derivation path
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decryption fails or passphrase is incorrect
+</ResponseField>
+
+**DecryptedKey Structure:**
+```go
+type DecryptedKey struct {
+    Key  *HDPrivateKey  // The decrypted HD private key
+    Path string         // The derivation path
+}
+```
+
+## Utility Functions
+
+### randomBytes
+
+Generates cryptographically secure random bytes.
+
+```go
+func randomBytes(count int) []byte
+```
+
+<ParamField path="count" type="int" required>
+  The number of random bytes to generate
+</ParamField>
+
+<ResponseField name="bytes" type="[]byte">
+  Cryptographically secure random bytes
+</ResponseField>
+
+<Note>
+  This function panics if the system random number generator fails, as this indicates a critical system issue.
+</Note>
+
+## Encryption Algorithms
+
+### ECDH Key Agreement
+
+- **Curve**: secp256k1 (Bitcoin's elliptic curve)
+- **Key Agreement**: Standard ECDH (Elliptic Curve Diffie-Hellman)
+- **Shared Secret**: Used directly as AES-256 key
+
+### AES Encryption
+
+- **Algorithm**: AES-256-CBC
+- **Key Size**: 256 bits (32 bytes)
+- **IV Size**: 128 bits (16 bytes)
+- **IV Source**: Last 16 bytes of compressed ephemeral public key
+- **Padding**: 
+  - No padding for fixed-size data (e.g., 64-byte key material)
+  - PKCS7 padding for variable-size data (passphrase encryption)
+
+### Scrypt Key Derivation
+
+Used in `KeyEncrypt`/`KeyDecrypt` for passphrase-based encryption:
+
+- **Algorithm**: scrypt
+- **Output**: 256 bits (32 bytes) for AES-256
+- **Parameters**: Encoded in the encrypted output
+- **Salt**: Random, stored with encrypted data
+
+## Security Considerations
+
+### Best Practices
+
+1. **Use HD Key Encryption** for wallet-to-wallet encryption (better than raw ECDH)
+2. **Use KeyEncrypt for backups** when you need passphrase-based encryption
+3. **Verify recipients** before encrypting to public keys
+4. **Store ephemeral keys** - they're required for decryption
+5. **Use strong passphrases** - scrypt is strong but not immune to weak passwords
+
+### Important Notes
+
+<Warning>
+  The encryption uses deprecated ECDH implementation for compatibility with existing Muun infrastructure. New implementations should carefully consider upgrading to modern ECDH standards.
+</Warning>
+
+- **IV Derivation**: The IV is derived from the ephemeral public key, not randomly generated. This is secure because each encryption uses a fresh ephemeral key pair.
+- **No Padding**: Low-level encryption functions use AES-CBC with no padding, so plaintext must be block-aligned (multiple of 16 bytes).
+- **Authenticated Encryption**: The current implementation does not include authentication tags (like AEAD). Integrity relies on the encryption scheme itself.
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/muun/libwallet"
+)
+
+func main() {
+    network := libwallet.Mainnet()
+    
+    // Example 1: Self-encryption
+    seed := []byte{/* seed bytes */}
+    key, _ := libwallet.NewHDPrivateKey(seed, network)
+    
+    plaintext := []byte("Secret message")
+    
+    // Encrypt to self
+    encOp := libwallet.NewEncryptOperation(key, plaintext)
+    encrypted, err := encOp.Encrypt()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Decrypt
+    decOp := libwallet.NewDecryptOperation(key, encrypted)
+    decrypted, err := decOp.Decrypt()
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Decrypted: %s\n", string(decrypted))
+    
+    // Example 2: Passphrase encryption
+    passphrase := "my-secure-passphrase"
+    encryptedKey, err := libwallet.KeyEncrypt(key, passphrase)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Later: decrypt with passphrase
+    decryptedKey, err := libwallet.KeyDecrypt(encryptedKey, passphrase, network)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Decrypted key path: %s\n", decryptedKey.Path)
+}
+```

@@ -1,0 +1,485 @@
+---
+title: "Challenge Keys"
+description: "Challenge key APIs for secure key recovery and emergency kit encryption"
+---
+
+## Overview
+
+Challenge keys are a critical component of Muun's recovery system. They enable:
+
+- **Recovery Code Protection**: Deriving keys from user recovery codes
+- **Emergency Kit Encryption**: Encrypting wallet keys for backup
+- **Secure Key Exchange**: Encrypting keys between user and Muun servers
+- **Multi-Version Support**: Handling legacy key formats (v2, v3)
+
+Challenge keys use scrypt for key derivation from recovery codes and ECDH+AES for encryption.
+
+## Key Constants
+
+### Encoded Key Lengths
+
+```go
+const (
+    EncodedKeyLength       = 147  // Modern key format (v3)
+    EncodedKeyLengthLegacy = 136  // Legacy key format (v2 without salt)
+)
+```
+
+### Key Serialization Versions
+
+```go
+const (
+    KeySerializationVersion2 = 2  // Legacy format with birthday
+    KeySerializationVersion3 = 3  // Modern format without birthday
+)
+```
+
+## ChallengePrivateKey
+
+Represents a private key derived from a recovery code for encrypting/decrypting wallet keys.
+
+### Constructor
+
+#### NewChallengePrivateKey
+
+Creates a challenge private key from an input (recovery code) and salt using scrypt.
+
+```go
+func NewChallengePrivateKey(input, salt []byte) *ChallengePrivateKey
+```
+
+<ParamField path="input" type="[]byte" required>
+  The recovery code or input material (typically user-provided)
+</ParamField>
+
+<ParamField path="salt" type="[]byte" required>
+  The salt for scrypt key derivation (8 bytes)
+</ParamField>
+
+<ResponseField name="ChallengePrivateKey" type="*ChallengePrivateKey">
+  The derived challenge private key
+</ResponseField>
+
+**Algorithm:**
+1. Derive 32-byte key using `Scrypt256(input, salt)`
+2. Convert bytes to secp256k1 private key
+3. Return wrapped private key
+
+### Signing Methods
+
+#### SignSha
+
+Computes SHA-256 digest of payload and signs it with ECDSA.
+
+```go
+func (k *ChallengePrivateKey) SignSha(payload []byte) ([]byte, error)
+```
+
+<ParamField path="payload" type="[]byte" required>
+  The data to sign (will be SHA-256 hashed)
+</ParamField>
+
+<ResponseField name="signature" type="[]byte">
+  DER-encoded ECDSA signature
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if signing fails
+</ResponseField>
+
+### Public Key Methods
+
+#### PubKey
+
+Returns the corresponding challenge public key.
+
+```go
+func (k *ChallengePrivateKey) PubKey() *ChallengePublicKey
+```
+
+<ResponseField name="ChallengePublicKey" type="*ChallengePublicKey">
+  The public key derived from this private key
+</ResponseField>
+
+#### PubKeyHex
+
+Returns the compressed public key as a hex string.
+
+```go
+func (k *ChallengePrivateKey) PubKeyHex() string
+```
+
+<ResponseField name="hex" type="string">
+  Hex-encoded compressed public key (66 characters, 33 bytes)
+</ResponseField>
+
+### Key Decryption Methods
+
+#### DecryptRawKey
+
+Decrypts an encrypted private key from a base58-encoded string.
+
+```go
+func (k *ChallengePrivateKey) DecryptRawKey(encryptedKey string, network *Network) (*DecryptedPrivateKey, error)
+```
+
+<ParamField path="encryptedKey" type="string" required>
+  Base58-encoded encrypted key (from emergency kit)
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration (mainnet, testnet, regtest)
+</ParamField>
+
+<ResponseField name="DecryptedPrivateKey" type="*DecryptedPrivateKey">
+  The decrypted HD private key with birthday information
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decryption fails or key format is invalid
+</ResponseField>
+
+**Process:**
+1. Decode base58 string to `EncryptedPrivateKeyInfo`
+2. Decrypt using ECDH with challenge private key
+3. Extract raw private key and chain code
+4. Return master HD private key
+
+#### DecryptKey
+
+Decrypts an encrypted private key from decoded key info.
+
+```go
+func (k *ChallengePrivateKey) DecryptKey(decodedInfo *EncryptedPrivateKeyInfo, network *Network) (*DecryptedPrivateKey, error)
+```
+
+<ParamField path="decodedInfo" type="*EncryptedPrivateKeyInfo" required>
+  The decoded encrypted key information
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="DecryptedPrivateKey" type="*DecryptedPrivateKey">
+  The decrypted key with birthday
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if decryption fails
+</ResponseField>
+
+### Decrypted Key Structure
+
+```go
+type DecryptedPrivateKey struct {
+    Key      *HDPrivateKey  // The decrypted HD private key
+    Birthday int            // Key birthday (block height, 0 for v3)
+}
+```
+
+<ParamField path="Key" type="*HDPrivateKey">
+  The decrypted HD private key (master key at path "m")
+</ParamField>
+
+<ParamField path="Birthday" type="int">
+  The key's birthday as block height. Used for faster blockchain scanning. 0 for version 3 keys (birthday removed as it was unused).
+</ParamField>
+
+## ChallengePublicKey
+
+Represents a public key derived from a challenge private key, used for encrypting wallet keys.
+
+### Constructor
+
+#### NewChallengePublicKeyFromSerialized
+
+Creates a challenge public key from serialized bytes.
+
+```go
+func NewChallengePublicKeyFromSerialized(serializedKey []byte) (*ChallengePublicKey, error)
+```
+
+<ParamField path="serializedKey" type="[]byte" required>
+  Compressed public key bytes (33 bytes)
+</ParamField>
+
+<ResponseField name="ChallengePublicKey" type="*ChallengePublicKey">
+  The parsed challenge public key
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if key format is invalid
+</ResponseField>
+
+### Key Encryption Methods
+
+#### EncryptKey
+
+Encrypts an HD private key for storage in emergency kit. Automatically detects version from muunPrivateKey.
+
+```go
+func (k *ChallengePublicKey) EncryptKey(
+    privKey *HDPrivateKey,
+    recoveryCodeSalt []byte,
+    birthday int,
+    muunPrivateKey string,
+) (string, error)
+```
+
+<ParamField path="privKey" type="*HDPrivateKey" required>
+  The HD private key to encrypt
+</ParamField>
+
+<ParamField path="recoveryCodeSalt" type="[]byte" required>
+  The salt used for recovery code scrypt (8 bytes, or empty for zero-filled)
+</ParamField>
+
+<ParamField path="birthday" type="int" required>
+  The key birthday (block height). Only used for v2 keys; ignored for v3.
+</ParamField>
+
+<ParamField path="muunPrivateKey" type="string" required>
+  The Muun private key (base58) - used to detect version (v2 or v3)
+</ParamField>
+
+<ResponseField name="encrypted" type="string">
+  Base58-encoded encrypted key
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if encryption fails or version is unrecognized
+</ResponseField>
+
+**Version Detection:**
+- Reads first byte of `muunPrivateKey` to determine format version
+- Encrypts using matching version (v2 or v3) for consistency
+- V2: Includes birthday field
+- V3: No birthday field (cleaner format)
+
+**Encrypted Format (v3):**
+```
+[1 byte: version=3]
+[33 bytes: ephemeral public key]
+[64 bytes: ciphertext (32-byte privKey + 32-byte chainCode)]
+[8 bytes: recovery code salt]
+```
+
+**Encrypted Format (v2):**
+```
+[1 byte: version=2]
+[2 bytes: birthday]
+[33 bytes: ephemeral public key]
+[64 bytes: ciphertext]
+[8 bytes: recovery code salt]
+```
+
+### Utility Methods
+
+#### GetChecksum
+
+Computes a checksum for the public key (for verification purposes).
+
+```go
+func (k *ChallengePublicKey) GetChecksum() string
+```
+
+<ResponseField name="checksum" type="string">
+  Hex-encoded checksum (last 8 bytes of SHA-256 hash)
+</ResponseField>
+
+**Algorithm:**
+1. SHA-256 hash of compressed public key
+2. Take last 8 bytes
+3. Hex encode
+
+## Encrypted Key Information
+
+### EncryptedPrivateKeyInfo
+
+Gomobile-compatible structure for encrypted key data using hex encoding.
+
+```go
+type EncryptedPrivateKeyInfo struct {
+    Version      int     // Serialization version (2 or 3)
+    Birthday     int     // Block height birthday (0 for v3)
+    EphPublicKey string  // Hex-encoded ephemeral public key (33 bytes)
+    CipherText   string  // Hex-encoded ciphertext (64 bytes)
+    Salt         string  // Hex-encoded recovery code salt (8 bytes)
+}
+```
+
+### Decoding Functions
+
+#### DecodeEncryptedPrivateKey
+
+Decodes a base58-encoded encrypted key string.
+
+```go
+func DecodeEncryptedPrivateKey(encodedKey string) (*EncryptedPrivateKeyInfo, error)
+```
+
+<ParamField path="encodedKey" type="string" required>
+  Base58-encoded encrypted key
+</ParamField>
+
+<ResponseField name="EncryptedPrivateKeyInfo" type="*EncryptedPrivateKeyInfo">
+  Decoded key information
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if format is invalid or version is unrecognized
+</ResponseField>
+
+**Supported Versions:**
+- **Version 2**: Legacy format with birthday and optional salt
+- **Version 3**: Modern format without birthday
+
+## Key Derivation
+
+### Scrypt256
+
+The `Scrypt256` function (referenced but not shown) derives a 256-bit key from input and salt.
+
+**Typical Parameters:**
+- **N**: CPU/memory cost parameter (e.g., 16384)
+- **r**: Block size (e.g., 8)
+- **p**: Parallelization (e.g., 1)
+- **Output**: 32 bytes (256 bits)
+
+**Purpose:** Makes brute-force attacks on recovery codes computationally expensive.
+
+## Security Considerations
+
+### Recovery Code Strength
+
+<Warning>
+  The security of the encrypted keys depends entirely on the strength of the recovery code. Use strong, random recovery codes (Muun typically uses 8-word codes from BIP39 wordlist).
+</Warning>
+
+### Salt Handling
+
+- **Modern Keys (v3)**: Always include 8-byte salt
+- **Legacy Keys (v2)**: May have zero-filled salt for very old keys
+- **Storage**: Salt is stored with encrypted key (not secret)
+
+### Version Compatibility
+
+- **Backward Compatible**: Can decrypt v2 and v3 keys
+- **Forward Compatible**: New encryptions should use v3
+- **Version Detection**: Automatically handled based on Muun key version
+
+### Best Practices
+
+1. **Always provide salt** when encrypting new keys
+2. **Store version information** with encrypted keys
+3. **Test decryption** immediately after encryption
+4. **Validate checksums** when comparing public keys
+5. **Use birthday field** (v2) for efficient blockchain scanning if needed
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/muun/libwallet"
+)
+
+func main() {
+    network := libwallet.Mainnet()
+    
+    // User's recovery code and salt
+    recoveryCode := []byte("user-recovery-code-words")
+    salt := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+    
+    // Step 1: Derive challenge keys from recovery code
+    challengePriv := libwallet.NewChallengePrivateKey(recoveryCode, salt)
+    challengePub := challengePriv.PubKey()
+    
+    fmt.Printf("Challenge Public Key: %s\n", challengePriv.PubKeyHex())
+    fmt.Printf("Checksum: %s\n", challengePub.GetChecksum())
+    
+    // Step 2: Create wallet key to encrypt
+    walletSeed := []byte{/* 32-64 random bytes */}
+    walletKey, _ := libwallet.NewHDPrivateKey(walletSeed, network)
+    
+    // Step 3: Encrypt wallet key with challenge public key
+    birthday := 700000  // Block height
+    muunKeyStr := "..." // Muun's encrypted key (determines version)
+    
+    encryptedKey, err := challengePub.EncryptKey(
+        walletKey,
+        salt,
+        birthday,
+        muunKeyStr,
+    )
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Encrypted Key: %s\n", encryptedKey)
+    
+    // Step 4: Later, decrypt with recovery code
+    decrypted, err := challengePriv.DecryptRawKey(encryptedKey, network)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Decrypted Key Path: %s\n", decrypted.Key.Path)
+    fmt.Printf("Birthday: %d\n", decrypted.Birthday)
+    
+    // Step 5: Verify by comparing public keys
+    originalPub := walletKey.PublicKey()
+    decryptedPub := decrypted.Key.PublicKey()
+    
+    if originalPub.String() == decryptedPub.String() {
+        fmt.Println("✓ Decryption successful!")
+    }
+}
+```
+
+## Recovery Workflow
+
+Typical emergency recovery flow:
+
+1. **User has**: Recovery code (8 words) + Emergency Kit PDF (with encrypted keys)
+2. **Decode**: Parse base58 encrypted keys from PDF
+3. **Derive**: Create challenge private key from recovery code + salt
+4. **Decrypt**: Decrypt both user key and Muun key
+5. **Restore**: Use decrypted keys to restore full wallet access
+
+```go
+// Recovery example
+func recoverWallet(recoveryWords string, encryptedUserKey string, encryptedMuunKey string) error {
+    network := libwallet.Mainnet()
+    
+    // Convert recovery words to bytes (implementation specific)
+    recoveryCode := wordsToBytes(recoveryWords)
+    
+    // Decode to get salt
+    keyInfo, _ := libwallet.DecodeEncryptedPrivateKey(encryptedUserKey)
+    salt, _ := hex.DecodeString(keyInfo.Salt)
+    
+    // Derive challenge key
+    challengeKey := libwallet.NewChallengePrivateKey(recoveryCode, salt)
+    
+    // Decrypt both keys
+    userKey, err := challengeKey.DecryptRawKey(encryptedUserKey, network)
+    if err != nil {
+        return fmt.Errorf("failed to decrypt user key: %w", err)
+    }
+    
+    muunKey, err := challengeKey.DecryptRawKey(encryptedMuunKey, network)
+    if err != nil {
+        return fmt.Errorf("failed to decrypt muun key: %w", err)
+    }
+    
+    // Now have full wallet access with both keys
+    fmt.Printf("User key: %s\n", userKey.Key.String())
+    fmt.Printf("Muun key: %s\n", muunKey.Key.String())
+    
+    return nil
+}
+```

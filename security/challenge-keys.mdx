@@ -1,0 +1,253 @@
+---
+title: Challenge keys
+description: Password-based challenge key system for secure wallet recovery
+---
+
+## Overview
+
+Challenge keys are a critical component of Muun's recovery system. They are password-derived keys that enable secure, server-independent wallet recovery through the emergency kit.
+
+## What are challenge keys?
+
+Challenge keys are cryptographic keys derived from user-memorable secrets (recovery code or password) using strong key derivation functions. They serve two primary purposes:
+
+1. **Encrypt wallet backup data** in the emergency kit
+2. **Enable decryption** during wallet recovery without server access
+
+## Key derivation
+
+### Challenge private key generation
+
+Challenge keys are derived using scrypt, a memory-hard key derivation function that resists brute-force attacks:
+
+```go libwallet/challenge_keys.go
+func NewChallengePrivateKey(input, salt []byte) *ChallengePrivateKey {
+    key := Scrypt256(input, salt)
+    priv, _ := btcec.PrivKeyFromBytes(key)
+    return &ChallengePrivateKey{key: priv}
+}
+```
+
+**Parameters:**
+- `input`: User's recovery code or password as bytes
+- `salt`: 8-byte random salt for key derivation
+- Returns: ECDSA private key on the secp256k1 curve
+
+<Info>
+Scrypt parameters are tuned to require significant memory and computation, making dictionary attacks impractical even with specialized hardware.
+</Info>
+
+### Version evolution
+
+Muun supports multiple challenge key versions:
+
+**Version 2 (Legacy)**
+- 136-byte encoded format
+- Salt stored only in second key
+- Supported for backward compatibility
+
+**Version 3 (Current)**
+- 147-byte encoded format  
+- Salt included in all encrypted keys
+- Improved security and recovery reliability
+
+```go libwallet/challenge_keys.go
+const (
+    KeySerializationVersion2 = 2
+    KeySerializationVersion3 = 3
+)
+
+const (
+    EncodedKeyLength       = 147  // Version 3
+    EncodedKeyLengthLegacy = 136  // Version 2
+)
+```
+
+## Challenge key operations
+
+### Signing challenges
+
+Challenge keys can sign arbitrary data to prove knowledge of the recovery secret:
+
+```go libwallet/challenge_keys.go
+func (k *ChallengePrivateKey) SignSha(payload []byte) ([]byte, error) {
+    hash := sha256.Sum256(payload)
+    sig := ecdsa.Sign(k.key, hash[:])
+    return sig.Serialize(), nil
+}
+```
+
+This is used during:
+- Recovery code setup verification
+- Password change operations  
+- Server authentication during recovery
+
+### Decrypting wallet keys
+
+The primary use of challenge keys is decrypting the encrypted private key from the emergency kit:
+
+```go libwallet/challenge_keys.go
+func (k *ChallengePrivateKey) DecryptKey(
+    decodedInfo *EncryptedPrivateKeyInfo, 
+    network *Network,
+) (*DecryptedPrivateKey, error) {
+    decoded, err := unwrapEncryptedPrivateKey(decodedInfo)
+    if err != nil {
+        return nil, err
+    }
+    
+    plaintext, err := decryptWithPrivKey(
+        k.key, 
+        decoded.EphPublicKey, 
+        decoded.CipherText,
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    // Process plaintext to reconstruct HD private key
+    // ...
+}
+```
+
+## Encrypted private key format
+
+Encrypted keys contain:
+
+```go libwallet/challenge_keys.go
+type EncryptedPrivateKeyInfo struct {
+    Version      int    // Key format version (2 or 3)
+    Birthday     int    // Wallet creation date
+    EphPublicKey string // 33-byte ephemeral public key (hex)
+    CipherText   string // 64-byte encrypted data (hex)
+    Salt         string // 8-byte salt (hex, version 3 only)
+}
+```
+
+### Encryption process
+
+1. **Generate ephemeral key pair**: One-time keypair for ECDH
+2. **Derive shared secret**: ECDH between ephemeral private key and challenge public key
+3. **Encrypt private key data**: AES-256-CBC using shared secret
+4. **Encode result**: Base58 encoding with version and metadata
+
+<Note>
+The ephemeral public key is included in the encrypted output, allowing the challenge private key to reconstruct the shared secret for decryption.
+</Note>
+
+## Challenge key lifecycle
+
+### Setup flow
+
+1. User creates recovery code
+2. Recovery code derives challenge private key
+3. Challenge public key sent to server
+4. Server encrypts user's private key with challenge public key
+5. Encrypted key included in emergency kit PDF
+
+### Recovery flow
+
+1. User enters recovery code from emergency kit
+2. Recovery code derives same challenge private key
+3. Challenge private key decrypts encrypted user key
+4. Wallet reconstructs from decrypted key
+
+### Password change
+
+When changing password/recovery code:
+
+1. Derive new challenge key from new password
+2. Re-encrypt private keys with new challenge public key
+3. Update emergency kit with new encrypted keys
+4. Invalidate old challenge keys
+
+<Warning>
+**Critical**: Always complete password change atomically. Partial updates can make recovery impossible.
+</Warning>
+
+## Security properties
+
+### Brute-force resistance
+
+Scrypt key derivation provides:
+- **Memory hardness**: Requires significant RAM (32+ MB)
+- **Time hardness**: Configurable iteration count
+- **Parallelization resistance**: Cannot efficiently parallelize
+
+### Offline recovery
+
+Challenge keys enable fully offline recovery:
+- No server communication required
+- Works even if Muun servers are unavailable
+- User has complete control over recovery
+
+### Forward secrecy
+
+Changing the recovery code generates new challenge keys:
+- Old encrypted data cannot be decrypted with new challenge key
+- Requires re-encryption with new challenge public key
+- Provides rotation capability for enhanced security
+
+## Best practices
+
+### For users
+
+1. **Choose strong recovery codes**: Use randomly generated codes
+2. **Store emergency kit securely**: Physical security is critical
+3. **Never share recovery code**: Equivalent to wallet private keys
+4. **Test recovery process**: Verify you can decrypt the emergency kit
+
+### For developers
+
+1. **Validate challenge key versions**: Handle both v2 and v3 formats
+2. **Clear sensitive memory**: Zero out passwords and keys after use
+3. **Use constant-time operations**: Prevent timing attacks
+4. **Implement rate limiting**: Limit password attempts
+
+```go
+// Example: Clear sensitive data
+defer func() {
+    for i := range recoveryCodeBytes {
+        recoveryCodeBytes[i] = 0
+    }
+}()
+```
+
+## Common issues
+
+### Decryption failures
+
+**Symptom**: "Failed to decrypt key" error
+
+**Causes**:
+- Incorrect recovery code entered
+- Version mismatch (v2 vs v3 format)
+- Corrupted encrypted key data
+- Wrong network (mainnet vs testnet)
+
+**Solution**: Verify all inputs and retry with correct data
+
+### Salt missing errors
+
+**Symptom**: "Salt required but not provided"
+
+**Cause**: Attempting to decrypt v3 format without salt
+
+**Solution**: Ensure salt is extracted and provided from encoded key
+
+## Related documentation
+
+<CardGroup cols={2}>
+  <Card title="Emergency Kit" icon="kit-medical" href="/features/emergency-kit">
+    Complete emergency kit system
+  </Card>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    Wallet recovery process
+  </Card>
+  <Card title="Challenge Keys API" icon="key" href="/api/challenge-keys">
+    Challenge key API reference
+  </Card>
+  <Card title="Encryption API" icon="lock" href="/api/encryption">
+    Encryption and decryption APIs
+  </Card>
+</CardGroup>

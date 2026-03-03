@@ -1,0 +1,482 @@
+---
+title: "HD Key Derivation"
+description: "Hierarchical Deterministic key derivation APIs for BIP32 compliant key management"
+---
+
+## Overview
+
+The HD key derivation APIs provide support for BIP32-compliant hierarchical deterministic wallets. These APIs allow you to derive child keys from parent keys using derivation paths, enabling deterministic key generation from a single seed.
+
+## HDPrivateKey
+
+Represents a hierarchical deterministic private key with derivation capabilities.
+
+### Constructor Functions
+
+#### NewHDPrivateKey
+
+Creates a new HD private key from a seed.
+
+```go
+func NewHDPrivateKey(seed []byte, network *Network) (*HDPrivateKey, error)
+```
+
+<ParamField path="seed" type="[]byte" required>
+  The seed bytes used to generate the master key
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration (mainnet, testnet, or regtest)
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The generated master HD private key at path "m"
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if key generation fails
+</ResponseField>
+
+#### NewMasterHDPrivateKeyFromBytes
+
+Builds an HD private key from raw key and chain code bytes. The data is assumed to correspond to a master key.
+
+```go
+func NewMasterHDPrivateKeyFromBytes(rawKey, chainCode []byte, network *Network) (*HDPrivateKey, error)
+```
+
+<ParamField path="rawKey" type="[]byte" required>
+  The compressed private key bytes (32 bytes)
+</ParamField>
+
+<ParamField path="chainCode" type="[]byte" required>
+  The chain code bytes (32 bytes)
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The HD private key at path "m"
+</ResponseField>
+
+#### NewBasePathHDPrivateKeyFromBytes
+
+Builds an HD private key from raw key and chain code bytes. The data is assumed to correspond to a key derived at Muun's base path `m/schema:1'/recovery:1'`.
+
+```go
+func NewBasePathHDPrivateKeyFromBytes(rawKey, chainCode []byte, network *Network) (*HDPrivateKey, error)
+```
+
+<ParamField path="rawKey" type="[]byte" required>
+  The compressed private key bytes
+</ParamField>
+
+<ParamField path="chainCode" type="[]byte" required>
+  The chain code bytes
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The HD private key at path "m/schema:1'/recovery:1'"
+</ResponseField>
+
+#### NewHDPrivateKeyFromString
+
+Creates an HD private key from a base58-encoded string (xprv format).
+
+```go
+func NewHDPrivateKeyFromString(str, path string, network *Network) (*HDPrivateKey, error)
+```
+
+<ParamField path="str" type="string" required>
+  Base58-encoded extended private key (e.g., "xprv...")
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  The derivation path for this key (e.g., "m/44'/0'/0'")
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The parsed HD private key
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the string is invalid or represents a public key
+</ResponseField>
+
+### Key Derivation Methods
+
+#### DerivedAt
+
+Derives a child private key at a specific index. Supports both hardened and non-hardened derivation.
+
+```go
+func (p *HDPrivateKey) DerivedAt(index int64, hardened bool) (*HDPrivateKey, error)
+```
+
+<ParamField path="index" type="int64" required>
+  The child index (0 to 2^31-1). Must not include the hardened bit
+</ParamField>
+
+<ParamField path="hardened" type="bool" required>
+  Whether to perform hardened derivation (adds 2^31 to index)
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The derived child key with updated path
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if index is out of bounds or derivation fails
+</ResponseField>
+
+**Example:**
+```go
+// Derive hardened key at index 0: m/0'
+child, err := masterKey.DerivedAt(0, true)
+
+// Derive non-hardened key at index 5: m/5
+child, err := masterKey.DerivedAt(5, false)
+```
+
+#### DeriveTo
+
+Derives a key to a specific derivation path. The target path must have the current key's path as a prefix.
+
+```go
+func (p *HDPrivateKey) DeriveTo(path string) (*HDPrivateKey, error)
+```
+
+<ParamField path="path" type="string" required>
+  The target derivation path (e.g., "m/44'/0'/0'/0/0" or "m/schema:1'/recovery:1'")
+</ParamField>
+
+<ResponseField name="HDPrivateKey" type="*HDPrivateKey">
+  The derived key at the target path
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if path is invalid, not a prefix, or derivation fails
+</ResponseField>
+
+**Path Format:**
+- Paths start with "m" (master key)
+- Use `/` to separate levels
+- Use `'` suffix for hardened derivation (e.g., `44'`)
+- Named indices are supported (e.g., `schema:1'`)
+
+**Examples:**
+- `m/44'/0'/0'/0/0` - BIP44 Bitcoin address derivation
+- `m/schema:1'/recovery:1'` - Muun's base derivation path
+- `m/purpose:84'/coin:0'/account:0'` - Named indices for clarity
+
+### Utility Methods
+
+#### PublicKey
+
+Returns the corresponding HD public key.
+
+```go
+func (p *HDPrivateKey) PublicKey() *HDPublicKey
+```
+
+<ResponseField name="HDPublicKey" type="*HDPublicKey">
+  The corresponding public key with the same path
+</ResponseField>
+
+#### String
+
+Returns the base58-encoded extended private key (xprv format).
+
+```go
+func (p *HDPrivateKey) String() string
+```
+
+<ResponseField name="string" type="string">
+  Base58-encoded extended private key
+</ResponseField>
+
+#### ECPrivateKey
+
+Returns the underlying EC private key for the current node.
+
+```go
+func (p *HDPrivateKey) ECPrivateKey() (*btcec.PrivateKey, error)
+```
+
+<ResponseField name="PrivateKey" type="*btcec.PrivateKey">
+  The underlying elliptic curve private key
+</ResponseField>
+
+#### ChainCode
+
+Returns the chain code for this key.
+
+```go
+func (p *HDPrivateKey) ChainCode() []byte
+```
+
+<ResponseField name="chainCode" type="[]byte">
+  The 32-byte chain code
+</ResponseField>
+
+#### Sign
+
+Signs data using the backing EC private key with SHA-256 hashing.
+
+```go
+func (p *HDPrivateKey) Sign(data []byte) ([]byte, error)
+```
+
+<ParamField path="data" type="[]byte" required>
+  The data to sign (will be SHA-256 hashed)
+</ParamField>
+
+<ResponseField name="signature" type="[]byte">
+  The DER-encoded ECDSA signature
+</ResponseField>
+
+### Encryption Methods
+
+See [Encryption APIs](/api/encryption) for `Encrypter()`, `EncrypterTo()`, `Decrypter()`, and `DecrypterFrom()` methods.
+
+## HDPublicKey
+
+Represents a hierarchical deterministic public key. Public keys can only perform non-hardened derivation.
+
+### Constructor Functions
+
+#### NewHDPublicKeyFromString
+
+Creates an HD public key from a base58-encoded string (xpub format).
+
+```go
+func NewHDPublicKeyFromString(str, path string, network *Network) (*HDPublicKey, error)
+```
+
+<ParamField path="str" type="string" required>
+  Base58-encoded extended public key (e.g., "xpub...")
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  The derivation path for this key
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  The network configuration
+</ParamField>
+
+<ResponseField name="HDPublicKey" type="*HDPublicKey">
+  The parsed HD public key
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the string is invalid or represents a private key
+</ResponseField>
+
+### Derivation Methods
+
+#### DerivedAt
+
+Derives a child public key at a specific index. Only non-hardened derivation is supported.
+
+```go
+func (p *HDPublicKey) DerivedAt(index int64) (*HDPublicKey, error)
+```
+
+<ParamField path="index" type="int64" required>
+  The child index (0 to 2^31-1, non-hardened only)
+</ParamField>
+
+<ResponseField name="HDPublicKey" type="*HDPublicKey">
+  The derived child public key
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if attempting hardened derivation or index is out of bounds
+</ResponseField>
+
+<Note>
+  Public keys cannot derive hardened children. Hardened derivation requires the private key.
+</Note>
+
+#### DeriveTo
+
+Derives a public key to a specific derivation path. All path components must be non-hardened.
+
+```go
+func (p *HDPublicKey) DeriveTo(path string) (*HDPublicKey, error)
+```
+
+<ParamField path="path" type="string" required>
+  The target derivation path (must be non-hardened)
+</ParamField>
+
+<ResponseField name="HDPublicKey" type="*HDPublicKey">
+  The derived public key at the target path
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if path contains hardened derivation or is invalid
+</ResponseField>
+
+### Utility Methods
+
+#### String
+
+Returns the base58-encoded extended public key (xpub format).
+
+```go
+func (p *HDPublicKey) String() string
+```
+
+<ResponseField name="string" type="string">
+  Base58-encoded extended public key
+</ResponseField>
+
+#### Raw
+
+Returns the compressed public key bytes.
+
+```go
+func (p *HDPublicKey) Raw() []byte
+```
+
+<ResponseField name="bytes" type="[]byte">
+  33-byte compressed public key (02 or 03 prefix + 32-byte x-coordinate)
+</ResponseField>
+
+#### Fingerprint
+
+Returns the 4-byte fingerprint for this public key (first 4 bytes of HASH160).
+
+```go
+func (p *HDPublicKey) Fingerprint() []byte
+```
+
+<ResponseField name="fingerprint" type="[]byte">
+  4-byte key fingerprint
+</ResponseField>
+
+#### ECPubKey
+
+Returns the underlying EC public key.
+
+```go
+func (p *HDPublicKey) ECPubKey() (*btcec.PublicKey, error)
+```
+
+<ResponseField name="PublicKey" type="*btcec.PublicKey">
+  The underlying elliptic curve public key
+</ResponseField>
+
+#### ChainCode
+
+Returns the chain code for this key.
+
+```go
+func (p *HDPublicKey) ChainCode() []byte
+```
+
+<ResponseField name="chainCode" type="[]byte">
+  The 32-byte chain code
+</ResponseField>
+
+## Derivation Path Specification
+
+### Standard Paths
+
+Muun uses the following derivation paths:
+
+- **Base Path**: `m/schema:1'/recovery:1'` - Muun's base derivation path for wallet keys
+- **BIP44**: `m/44'/0'/0'` - Standard Bitcoin derivation path
+- **BIP84**: `m/84'/0'/0'` - Native SegWit (bech32) derivation path
+
+### Path Syntax
+
+- **Master**: `m` indicates the master key
+- **Hardened**: `'` or `h` suffix (e.g., `44'` or `44h`) adds 2^31 to the index
+- **Named Indices**: Use format `name:index` (e.g., `schema:1'` is equivalent to `1'`)
+- **Separator**: `/` separates path levels
+
+### Examples
+
+```go
+// Standard BIP44 Bitcoin path
+key, _ := masterKey.DeriveTo("m/44'/0'/0'/0/0")
+
+// Muun base path
+baseKey, _ := masterKey.DeriveTo("m/schema:1'/recovery:1'")
+
+// Named indices for clarity
+key, _ := masterKey.DeriveTo("m/purpose:84'/coin:0'/account:0'/change:0/index:0")
+```
+
+## Error Handling
+
+### Common Errors
+
+- **Invalid Path**: Path does not have current key's path as prefix
+- **Hardened Derivation**: Attempting hardened derivation on public key
+- **Index Out of Bounds**: Index >= 2^31 or negative
+- **Parse Error**: Invalid path syntax or base58 encoding
+
+### Best Practices
+
+1. Always check error returns from derivation functions
+2. Use hardened derivation (`'`) for account-level keys
+3. Use non-hardened derivation for address generation
+4. Store and track derivation paths for key recovery
+5. Validate paths before derivation to avoid errors
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/muun/libwallet"
+)
+
+func main() {
+    // Create master key from seed
+    seed := []byte{/* 32-64 random bytes */}
+    network := libwallet.Mainnet()
+    masterKey, err := libwallet.NewHDPrivateKey(seed, network)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Derive to Muun base path
+    baseKey, err := masterKey.DeriveTo("m/schema:1'/recovery:1'")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Derive address key (non-hardened)
+    addressKey, err := baseKey.DerivedAt(0, false)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Get public key for address generation
+    pubKey := addressKey.PublicKey()
+    
+    // Export as base58
+    xprv := addressKey.String()
+    xpub := pubKey.String()
+    
+    fmt.Printf("Private: %s\n", xprv)
+    fmt.Printf("Public: %s\n", xpub)
+}
+```

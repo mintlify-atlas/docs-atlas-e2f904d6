@@ -1,0 +1,318 @@
+---
+title: "Lightning Network Support"
+description: "Understanding how Muun Wallet provides seamless Lightning Network payments without running a Lightning node"
+icon: "bolt"
+---
+
+## Overview
+
+Muun Wallet provides **native Lightning Network support** without requiring users to run a Lightning node, manage channels, or understand Lightning's technical complexity. Users can send and receive Lightning payments as easily as on-chain transactions.
+
+<Note>
+Muun doesn't use traditional Lightning channels. Instead, it uses **submarine swaps** to convert between on-chain Bitcoin and Lightning payments in real-time.
+</Note>
+
+## How It Works
+
+### No Lightning Node Required
+
+Unlike traditional Lightning wallets, Muun:
+
+- **No channels to manage**: No need to open, close, or balance channels
+- **No inbound liquidity issues**: Can receive any amount at any time
+- **No force closures**: No risk of losing funds due to channel disputes
+- **No watchtowers**: No need for online monitoring
+
+### Architecture
+
+Muun's Lightning implementation uses:
+
+1. **On-chain multisig wallet** as the base layer
+2. **Submarine swaps** to convert to/from Lightning
+3. **Swap server** operated by Muun for Lightning routing
+4. **HTLC contracts** for trustless atomic swaps
+
+## Receiving Lightning Payments
+
+### Invoice Generation
+
+When you create a Lightning invoice in Muun:
+
+```go
+// From incoming_swap.go
+type IncomingSwap struct {
+    Htlc             *IncomingSwapHtlc
+    SphinxPacket     []byte
+    PaymentHash      []byte
+    PaymentAmountSat int64
+    CollectSat       int64
+}
+```
+
+The process:
+
+1. **Generate invoice**: App creates standard BOLT-11 Lightning invoice
+2. **Store secrets**: Payment hash and preimage stored locally
+3. **Wait for HTLC**: Muun's swap server watches for incoming Lightning payment
+4. **Submarine swap**: Lightning payment converted to on-chain UTXO
+5. **Collect funds**: User signs to collect funds to their wallet
+
+### HTLC Verification
+
+Before collecting funds, the wallet verifies the incoming swap:
+
+```go
+// From incoming_swap.go:62
+func (s *IncomingSwap) VerifyFulfillable(userKey *HDPrivateKey, 
+    net *Network) error {
+    
+    // Lookup invoice matching payment hash
+    invoice, err := s.getInvoice()
+    
+    // Verify payment amount matches invoice
+    if invoice.AmountSat != 0 && invoice.AmountSat > s.PaymentAmountSat {
+        return fmt.Errorf("payment amount does not match invoice")
+    }
+    
+    // Validate sphinx packet (Lightning onion routing)
+    err = sphinx.Validate(
+        s.SphinxPacket,
+        paymentHash,
+        invoice.PaymentSecret,
+        nodeKey,
+        lnwire.MilliSatoshi(s.PaymentAmountSat*1000),
+        net.network,
+    )
+    
+    return nil
+}
+```
+
+Security checks performed:
+- Payment hash matches the invoice
+- Amount is correct (allows overpayment)
+- Sphinx packet is valid (proves it came through Lightning network)
+- HTLC script is correctly constructed
+
+### HTLC Script Structure
+
+Incoming swaps use a specialized HTLC script:
+
+```go
+// From incoming_swap.go:478
+func createHtlcScript(userPublicKey, muunPublicKey, swapServerPublicKey []byte, 
+    expiry int64, paymentHash []byte) ([]byte, error) {
+    
+    // Script allows spending via:
+    // 1. Muun + User + Preimage (normal case)
+    // 2. SwapServer + Timeout (refund case)
+}
+```
+
+This ensures:
+- **User must sign**: Maintains 2-of-2 multisig security
+- **Preimage required**: Proves Lightning payment was received
+- **Timeout protection**: Swap server can refund if user doesn't collect
+
+## Sending Lightning Payments
+
+### Submarine Swap Flow
+
+When sending to a Lightning invoice:
+
+1. **Parse invoice**: Extract destination, amount, payment hash
+2. **Create swap**: Lock on-chain funds in an HTLC
+3. **Lightning payment**: Muun's swap server pays the Lightning invoice
+4. **Reveal preimage**: Recipient reveals the preimage
+5. **Collect funds**: Swap server collects the locked on-chain funds using preimage
+
+This is **trustless** because:
+- Funds are locked in an HTLC script, not sent directly to Muun
+- Preimage is required to claim funds
+- If Lightning payment fails, user can reclaim funds after timeout
+
+### Submarine Swap V1
+
+```go
+// From submarineSwapV1.go
+type coinSubmarineSwapV1 struct {
+    Network         *chaincfg.Params
+    RefundAddress   string
+    PaymentHash256  []byte
+    ServerPublicKey []byte
+    LockTime        int64
+}
+```
+
+Features:
+- Non-native SegWit (P2WSH wrapped in P2SH)
+- User-specified refund address
+- Time-based refund after expiry
+
+### Submarine Swap V2
+
+```go
+// From submarineSwapV2.go
+type coinSubmarineSwapV2 struct {
+    Network             *chaincfg.Params
+    PaymentHash256      []byte
+    UserPublicKey       []byte
+    MuunPublicKey       []byte
+    ServerPublicKey     []byte
+    BlocksForExpiration int64
+    ServerSignature     []byte
+}
+```
+
+Improvements:
+- Native SegWit (P2WSH) for lower fees
+- Integrates with 2-of-2 multisig
+- Block-based expiration
+- Server must provide signature upfront
+
+Source: `libwallet/submarineSwapV2.go:13-24`
+
+<Warning>
+Submarine swap transactions **cannot be fully signed** by the user alone. The swap server must cooperate, or the user must wait for the timeout to reclaim funds.
+</Warning>
+
+## Payment Validation
+
+Before creating a swap, Muun validates:
+
+```go
+func ValidateSubmarineSwap(rawInvoice string, userPublicKey *HDPublicKey, 
+    muunPublicKey *HDPublicKey, swap SubmarineSwap, 
+    originalExpirationInBlocks int64, network *Network) error
+```
+
+Validation checks:
+- Invoice is valid BOLT-11 format
+- Amount matches user's intention
+- Expiration is reasonable
+- Keys are correctly derived
+- Server signature is valid (v2)
+
+Source: `libwallet/submarineSwap.go:41`
+
+## User Experience
+
+### Seamless Integration
+
+From the user's perspective:
+
+- **Unified balance**: No distinction between on-chain and Lightning funds
+- **No liquidity management**: Can receive any amount instantly
+- **Automatic routing**: App automatically chooses best payment method
+- **Standard invoices**: Compatible with any Lightning wallet
+
+### When to Use Lightning
+
+Muun recommends Lightning for:
+
+<Tip>
+- **Small payments**: Lightning fees are often lower for small amounts
+- **Instant settlement**: Payments confirm in seconds
+- **Recipient requires Lightning**: Some services only accept Lightning
+</Tip>
+
+On-chain is better for:
+- **Large payments**: Lower percentage fees
+- **Maximum security**: Direct blockchain settlement
+- **Cold storage**: Long-term savings
+
+## Technical Trade-offs
+
+### Advantages
+
+- **Zero channel management**: No technical complexity
+- **Always online**: No need to keep app running
+- **No stuck funds**: No liquidity locked in channels
+- **Universal compatibility**: Works with all Lightning wallets
+
+### Considerations
+
+- **Swap fees**: Each Lightning payment includes a swap fee
+- **On-chain footprint**: Every Lightning payment creates on-chain transaction
+- **Server dependency**: Requires Muun's swap server to be operational
+- **Not true Lightning**: Uses submarine swaps rather than native channels
+
+<Note>
+During high on-chain fee periods, Muun subsidizes swap costs to keep Lightning payments affordable. However, users should be aware of the on-chain component.
+</Note>
+
+## Privacy Considerations
+
+### What's Private
+
+- Payment hash is unique and not linkable to your identity
+- Sphinx routing hides payment path
+- On-chain swap UTXO doesn't reveal Lightning invoice details
+
+### What's Not Private
+
+- Muun's swap server knows:
+  - You're sending/receiving a Lightning payment
+  - The amount and timing
+  - Your on-chain addresses (already known due to multisig)
+
+### Best Practices
+
+- Use separate wallets for privacy-sensitive payments
+- Be aware submarine swaps create on-chain transaction history
+- Consider the trust model: Muun can see your Lightning payment patterns
+
+## Implementation Details
+
+### Sphinx Packet Validation
+
+Muun validates the Sphinx onion routing packet to ensure payments came through the Lightning network:
+
+```go
+// From incoming_swap.go:101
+err = sphinx.Validate(
+    s.SphinxPacket,
+    paymentHash,
+    invoice.PaymentSecret,
+    nodeKey,
+    0, // Used internally by sphinx decoder
+    lnwire.MilliSatoshi(s.PaymentAmountSat*1000),
+    net.network,
+)
+```
+
+This prevents attacks where someone sends funds without routing through Lightning.
+
+### Fulfillment Transaction
+
+When collecting an incoming Lightning payment:
+
+```go
+// From incoming_swap.go:177
+return &IncomingSwapFulfillmentResult{
+    FulfillmentTx: buf.Bytes(),  // Signed transaction
+    Preimage:      invoice.Preimage,  // Reveals to Lightning sender
+}
+```
+
+The fulfillment transaction:
+1. Spends the HTLC output
+2. Provides the preimage in the witness
+3. Includes both user and Muun signatures
+4. Sends funds to user's multisig address
+
+Source: `libwallet/incoming_swap.go:177-180`
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Submarine Swaps" icon="arrow-right-arrow-left" href="/features/submarine-swaps">
+    Deep dive into the submarine swap protocol
+  </Card>
+  <Card title="Multisig" icon="key" href="/features/multisig">
+    How Lightning integrates with 2-of-2 multisig
+  </Card>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    Recovering Lightning funds in emergency scenarios
+  </Card>
+</CardGroup>

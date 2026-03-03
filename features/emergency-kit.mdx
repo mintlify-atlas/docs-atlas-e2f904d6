@@ -1,0 +1,485 @@
+---
+title: "Emergency Kit for Recovery"
+description: "Understanding Muun's Emergency Kit: a PDF backup containing encrypted keys for wallet recovery without Muun's assistance"
+icon: "file-shield"
+---
+
+## Overview
+
+The **Emergency Kit** is Muun Wallet's comprehensive backup solution. It's a PDF document containing all the information needed to recover your Bitcoin funds, even if Muun's servers are permanently offline.
+
+<Note>
+The Emergency Kit ensures true self-custody: you always maintain the ability to recover your funds independently, without Muun's cooperation.
+</Note>
+
+## What's in the Emergency Kit?
+
+The Emergency Kit contains:
+
+1. **Two encrypted private keys**:
+   - Your user key (encrypted)
+   - Muun's key (encrypted)
+
+2. **Key fingerprints**: For verification and derivation
+
+3. **Output descriptors**: Scripts for generating all address types
+
+4. **Recovery code checksum**: Validates your recovery code
+
+5. **Verification code**: Ensures PDF integrity
+
+6. **Metadata**: Birthday block, version info, technical details
+
+<Warning>
+The Emergency Kit PDF must be kept secure. Anyone with both the PDF and your recovery code can steal all your Bitcoin.
+</Warning>
+
+## Emergency Kit Versions
+
+Muun has evolved the Emergency Kit format over time:
+
+```go
+// From emergency_kit.go:10
+const (
+    EKVersionNeverExported = -1
+    // EKVersionOnlyKeys is the encrypted keys to be written down / emailed
+    EKVersionOnlyKeys = 1
+    // EKVersionDescriptors is the first PDF including the descriptors
+    EKVersionDescriptors = 2
+    // EKVersionMusig add the musig descriptors
+    EKVersionMusig   = 3
+    ekVersionCurrent = EKVersionMusig
+)
+```
+
+**Version History:**
+
+| Version | Features | Use Case |
+|---------|----------|----------|
+| -1 | Never exported | Wallet has no backup yet |
+| 1 | Keys only | Manual entry, early wallets |
+| 2 | Keys + Descriptors | PDF with standard scripts |
+| 3 | Keys + Descriptors + MuSig | Current version with Taproot support |
+
+Source: `libwallet/emergency_kit.go:10-19`
+
+## Generation Process
+
+### Step 1: Prepare Input Data
+
+```go
+// From emergency_kit.go:21
+type EKInput struct {
+    FirstEncryptedKey  string  // User's encrypted key
+    FirstFingerprint   string  // User key fingerprint
+    SecondEncryptedKey string  // Muun's encrypted key
+    SecondFingerprint  string  // Muun key fingerprint
+    RcChecksum         string  // Recovery code checksum
+}
+```
+
+The input contains:
+- Both keys encrypted with the recovery code
+- Fingerprints for key identification
+- Recovery code checksum for validation
+
+### Step 2: Generate HTML
+
+```go
+// From emergency_kit.go:43
+func GenerateEmergencyKitHTML(ekParams *EKInput, language string) (*EKOutput, error) {
+    moduleInput := &emergencykit.Input{
+        FirstEncryptedKey:  ekParams.FirstEncryptedKey,
+        FirstFingerprint:   ekParams.FirstFingerprint,
+        SecondEncryptedKey: ekParams.SecondEncryptedKey,
+        SecondFingerprint:  ekParams.SecondFingerprint,
+        Version:            ekVersionCurrent,
+    }
+    
+    // Create the HTML and the verification code:
+    htmlWithCode, err := emergencykit.GenerateHTML(moduleInput, language)
+    if err != nil {
+        return nil, fmt.Errorf("GenerateEkHtml failed to render: %w", err)
+    }
+    
+    // Create and serialize the metadata:
+    metadata, err := createEmergencyKitMetadata(ekParams)
+    if err != nil {
+        return nil, fmt.Errorf("GenerateEkHtml failed to create metadata: %w", err)
+    }
+    
+    return &EKOutput{
+        HTML:             htmlWithCode.HTML,
+        VerificationCode: htmlWithCode.VerificationCode,
+        Metadata:         string(metadataBytes),
+        Version:          moduleInput.Version,
+    }, nil
+}
+```
+
+**HTML Generation:**
+
+1. Takes encrypted keys and fingerprints
+2. Generates localized HTML for PDF rendering
+3. Creates a verification code for integrity checking
+4. Serializes metadata for embedding
+
+Source: `libwallet/emergency_kit.go:43-77`
+
+### Step 3: Render PDF
+
+The HTML is rendered to PDF using the device's WebKit/Chromium engine. This happens in the native app code (Android/iOS), not in libwallet.
+
+### Step 4: Embed Metadata
+
+```go
+// From emergency_kit.go:82
+func AddEmergencyKitMetadata(metadataText string, srcFile string, dstFile string) error {
+    // Initialize the MetadataWriter:
+    metadataWriter := &emergencykit.MetadataWriter{
+        SrcFile: srcFile,
+        DstFile: dstFile,
+    }
+    
+    // Deserialize the metadata:
+    var metadata emergencykit.Metadata
+    err := json.Unmarshal([]byte(metadataText), &metadata)
+    if err != nil {
+        return fmt.Errorf("AddEkMetadata failed to unmarshal: %w", err)
+    }
+    
+    err = metadataWriter.WriteMetadata(&metadata)
+    if err != nil {
+        return fmt.Errorf("AddEkMetadata failed to write metadata: %w", err)
+    }
+    
+    return nil
+}
+```
+
+**Metadata Embedding:**
+
+1. Takes the rendered PDF
+2. Embeds machine-readable metadata
+3. Writes to final PDF file
+4. Preserves visual appearance
+
+This allows recovery tools to extract all necessary information programmatically.
+
+Source: `libwallet/emergency_kit.go:82-103`
+
+## Metadata Structure
+
+```go
+// From emergency_kit.go:105
+func createEmergencyKitMetadata(ekParams *EKInput) (*emergencykit.Metadata, error) {
+    // Decode both keys to extract inner properties
+    firstKey, err := DecodeEncryptedPrivateKey(ekParams.FirstEncryptedKey)
+    secondKey, err := DecodeEncryptedPrivateKey(ekParams.SecondEncryptedKey)
+    
+    // Obtain the list of checksumed output descriptors
+    descriptors := emergencykit.GetDescriptors(&emergencykit.DescriptorsData{
+        FirstFingerprint:  ekParams.FirstFingerprint,
+        SecondFingerprint: ekParams.SecondFingerprint,
+    })
+    
+    // Create the keys for the key array
+    keys := []*emergencykit.MetadataKey{
+        createEmergencyKitMetadataKey(firstKey),
+        createEmergencyKitMetadataKey(secondKey),
+    }
+    
+    metadata := &emergencykit.Metadata{
+        Version:           ekVersionCurrent,
+        BirthdayBlock:     secondKey.Birthday,
+        EncryptedKeys:     keys,
+        OutputDescriptors: descriptors,
+        RcChecksum:        ekParams.RcChecksum,
+    }
+    return metadata, nil
+}
+```
+
+**Metadata Contents:**
+
+- **Version**: Emergency Kit format version
+- **Birthday Block**: First block to scan during recovery
+- **Encrypted Keys**: Both user and Muun keys with encryption details
+- **Output Descriptors**: Scripts for all address types (V2-V6, Taproot, etc.)
+- **Recovery Code Checksum**: Validates recovery code during recovery
+
+Source: `libwallet/emergency_kit.go:105-143`
+
+## Output Descriptors
+
+Descriptors allow any Bitcoin wallet to derive your addresses:
+
+```go
+// From emergency_kit.go:124
+descriptors := emergencykit.GetDescriptors(&emergencykit.DescriptorsData{
+    FirstFingerprint:  ekParams.FirstFingerprint,
+    SecondFingerprint: ekParams.SecondFingerprint,
+})
+```
+
+Descriptors include:
+- **P2SH scripts**: For v2 addresses
+- **P2WSH scripts**: For v3-v4 SegWit addresses
+- **Taproot scripts**: For v5-v6 Taproot addresses with MuSig2
+- **Submarine swap scripts**: For swap recovery
+- **Incoming swap scripts**: For Lightning recovery
+
+This ensures compatibility with:
+- Bitcoin Core descriptor wallets
+- Other descriptor-compatible wallets
+- Custom recovery tools
+
+## Encrypted Key Format
+
+```go
+// From emergency_kit.go:145
+func createEmergencyKitMetadataKey(key *EncryptedPrivateKeyInfo) *emergencykit.MetadataKey {
+    return &emergencykit.MetadataKey{
+        DhPubKey:         key.EphPublicKey,
+        EncryptedPrivKey: key.CipherText,
+        Salt:             key.Salt,
+    }
+}
+```
+
+Each encrypted key contains:
+
+- **Ephemeral Public Key**: For ECDH key derivation
+- **Cipher Text**: Encrypted private key + chain code (64 bytes)
+- **Salt**: For key derivation function
+
+Encryption scheme:
+1. Recovery code → Scrypt → Challenge private key
+2. Challenge key + Ephemeral public key → ECDH → Encryption key
+3. Encryption key encrypts the master private key
+
+See [challenge_keys.go](/workspace/source/libwallet/challenge_keys.go) for implementation.
+
+## Verification Code
+
+The Emergency Kit includes a verification code:
+
+```go
+// From emergency_kit.go:69
+output := &EKOutput{
+    HTML:             htmlWithCode.HTML,
+    VerificationCode: htmlWithCode.VerificationCode,
+    Metadata:         string(metadataBytes),
+    Version:          moduleInput.Version,
+}
+```
+
+Purpose:
+- **Integrity check**: Ensures PDF wasn't corrupted or tampered with
+- **User verification**: Displayed in app and on PDF for comparison
+- **Version tracking**: Different codes for different kit versions
+
+<Tip>
+Before storing your Emergency Kit, verify that the verification code on the PDF matches the one shown in the app.
+</Tip>
+
+## How to Use the Emergency Kit
+
+### Scenario 1: Muun Still Operational
+
+If you lose your phone but Muun's servers work:
+
+1. **Install Muun** on a new device
+2. **Choose "Recover wallet"**
+3. **Enter recovery code** from your backup
+4. Wallet restores automatically with server assistance
+
+**No Emergency Kit PDF needed** in this case.
+
+### Scenario 2: Muun Permanently Offline
+
+If Muun's servers are gone forever:
+
+1. **Obtain Emergency Kit PDF** from your backup
+2. **Extract encrypted keys** from the PDF
+3. **Use recovery code** to decrypt both keys
+4. **Import to recovery tool** (Muun provides one, or use Bitcoin Core)
+5. **Scan blockchain** from birthday block onward
+6. **Derive addresses** using output descriptors
+7. **Create transaction** to sweep funds (requires both keys to sign)
+
+<Warning>
+This process is technical and requires understanding of Bitcoin wallet recovery. Muun provides detailed documentation and tools for this scenario.
+</Warning>
+
+### Scenario 3: Partial Emergency
+
+If you can access wallet but want to migrate:
+
+1. Use Emergency Kit to import keys elsewhere
+2. Sweep funds to a new wallet
+3. Maintains continuity even if you stop trusting Muun
+
+## Storage Best Practices
+
+### Physical Storage
+
+<Tip>
+**Do:**
+- Print multiple copies
+- Store in secure locations (safe, bank deposit box)
+- Keep separate from recovery code
+- Use waterproof/fireproof storage
+- Verify readability periodically
+
+**Don't:**
+- Store only digitally
+- Keep with your phone
+- Share or photograph
+- Store in cloud storage
+- Rely on a single copy
+</Tip>
+
+### Digital Storage
+
+If you must store digitally:
+
+- **Encrypt the PDF** with a strong password (separate from recovery code)
+- **Use offline storage** (USB drive, not cloud)
+- **Multiple backups** in different physical locations
+- **Test recovery process** before relying on it
+
+### Recovery Code Storage
+
+**Critical**: Store recovery code separately from Emergency Kit!
+
+- Write on paper, never digital
+- Multiple copies in different locations
+- Consider splitting across trusted parties
+- Metal backup for fire/water resistance
+
+Someone with **both** the Emergency Kit PDF and recovery code can steal all your Bitcoin.
+
+## Security Considerations
+
+### Threat Model
+
+**Protected Against:**
+
+- Muun company disappearing
+- Muun servers being hacked
+- Muun becoming malicious
+- Loss of your phone
+- Forgotten passwords
+
+**Not Protected Against:**
+
+- Theft of both Emergency Kit and recovery code
+- Physical attacks forcing you to reveal recovery code
+- Malware on the device during PDF generation
+- Backdoored PDF reader during recovery
+
+### Encryption Strength
+
+Keys are encrypted using:
+
+- **Scrypt**: Memory-hard KDF resistant to brute force
+- **ECDH**: Elliptic curve Diffie-Hellman for key agreement
+- **Recovery code entropy**: 128+ bits of randomness
+
+Brute-forcing the recovery code is computationally infeasible.
+
+### PDF Security
+
+The PDF itself:
+
+- **Not password-protected**: Anyone can open it
+- **Contains encrypted keys**: Useless without recovery code
+- **Includes metadata**: Machine-readable for tools
+- **Human-readable**: Shows encrypted keys visually
+
+## Implementation Details
+
+### Why Two Keys?
+
+The Emergency Kit contains **both** the user key and Muun's key because:
+
+1. **2-of-2 multisig**: All UTXOs require both signatures
+2. **Independent recovery**: Don't need Muun's cooperation
+3. **Full control**: Can sweep funds without any server
+4. **Trust minimization**: Muun can't prevent your recovery
+
+This is the key to Muun's "collaborative custody" model.
+
+### Birthday Block Optimization
+
+```go
+// From emergency_kit.go:137
+metadata := &emergencykit.Metadata{
+    BirthdayBlock:     secondKey.Birthday,
+    // ...
+}
+```
+
+The birthday block is the block height when the wallet was created. Recovery tools:
+
+- **Start scanning here**: No need to scan the entire blockchain
+- **Skip empty blocks**: Faster recovery
+- **Reduce bandwidth**: Only download relevant blocks
+
+Typically reduces recovery time from days to minutes.
+
+## Advanced: Manual Decryption
+
+For understanding or custom tools, the decryption process:
+
+```go
+// From challenge_keys.go:84
+func (k *ChallengePrivateKey) DecryptKey(decodedInfo *EncryptedPrivateKeyInfo, 
+    network *Network) (*DecryptedPrivateKey, error) {
+    
+    decoded, err := unwrapEncryptedPrivateKey(decodedInfo)
+    
+    // ECDH to derive decryption key
+    plaintext, err := decryptWithPrivKey(k.key, decoded.EphPublicKey, 
+        decoded.CipherText)
+    
+    // Split into private key and chain code
+    rawPrivKey := plaintext[0:32]
+    rawChainCode := plaintext[32:]
+    
+    // Create HD private key
+    privKey, err := NewMasterHDPrivateKeyFromBytes(rawPrivKey, rawChainCode, network)
+    
+    return &DecryptedPrivateKey{
+        privKey,
+        int(decoded.Birthday),
+    }, nil
+}
+```
+
+Steps:
+1. Recovery code → Challenge private key (via Scrypt)
+2. Challenge private key + Ephemeral public key → Shared secret (via ECDH)
+3. Shared secret decrypts cipher text
+4. Plaintext = 32 bytes private key + 32 bytes chain code
+5. Reconstruct BIP32 HD key from these 64 bytes
+
+Source: `libwallet/challenge_keys.go:92-115`
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    Step-by-step recovery procedures using the Emergency Kit
+  </Card>
+  <Card title="Recovery Code" icon="key" href="/features/recovery">
+    Understanding and managing your recovery code
+  </Card>
+  <Card title="Multisig" icon="shield" href="/features/multisig">
+    Why the Emergency Kit contains both multisig keys
+  </Card>
+  <Card title="Security Cards" icon="credit-card" href="/features/security-cards">
+    How security cards integrate with emergency recovery
+  </Card>
+</CardGroup>

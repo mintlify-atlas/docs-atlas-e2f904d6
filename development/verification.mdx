@@ -1,0 +1,326 @@
+---
+title: APK Verification
+description: Verify that an installed Muun Wallet APK matches the source code
+---
+
+Muun Wallet provides a verification process that allows anyone to verify that an installed APK (from Google Play or other sources) matches the source code. This ensures the app hasn't been tampered with and was built from the published source.
+
+## Overview
+
+The verification process:
+
+1. Extracts the APK from your Android device
+2. Checks out the corresponding source code version
+3. Builds a fresh APK using the reproducible build process
+4. Compares the installed APK with the freshly built one
+
+## Requirements
+
+- [Docker](https://www.docker.com/) >= 18.09
+- [ADB](https://developer.android.com/studio/releases/platform-tools) (Android Debug Bridge)
+- At least 16 GB of RAM allocated to Docker
+- At least 60 GB of free disk space
+- Muun Wallet installed on an Android device
+- USB debugging enabled on your device
+
+## Setup
+
+### Install ADB
+
+<CodeGroup>
+```bash Linux (Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install android-tools-adb
+```
+
+```bash macOS (Homebrew)
+brew install android-platform-tools
+```
+
+```bash Windows
+# Download Android Platform Tools from:
+# https://developer.android.com/studio/releases/platform-tools
+# Extract and add to PATH
+```
+</CodeGroup>
+
+### Enable USB Debugging
+
+On your Android device:
+
+<Steps>
+  <Step title="Enable Developer Options">
+    Go to **Settings → About Phone** and tap **Build Number** 7 times.
+  </Step>
+
+  <Step title="Enable USB Debugging">
+    Go to **Settings → Developer Options** and enable **USB Debugging**.
+  </Step>
+
+  <Step title="Connect Device">
+    Connect your device via USB and authorize the computer when prompted.
+  </Step>
+
+  <Step title="Verify Connection">
+    Verify ADB can see your device:
+    
+    ```bash
+    adb devices
+    ```
+    
+    You should see your device listed.
+  </Step>
+</Steps>
+
+## Verification Process
+
+<Steps>
+  <Step title="Extract APK from Device">
+    Pull the installed APK from your Android device:
+    
+    ```bash
+    adb pull $(adb shell pm path io.muun.apollo | grep "/base.apk" | sed 's/^package://') apollo-play.apk
+    ```
+    
+    This command:
+    - Finds the installation path of Muun Wallet (`io.muun.apollo`)
+    - Filters for the base APK file
+    - Pulls it to your local machine as `apollo-play.apk`
+  </Step>
+
+  <Step title="Identify App Version">
+    Check the version of the installed app:
+    
+    ```bash
+    adb shell dumpsys package io.muun.apollo | grep versionName
+    ```
+    
+    Note the version number (e.g., `48.8`).
+  </Step>
+
+  <Step title="Checkout Corresponding Commit">
+    Checkout the git commit that corresponds to the app version:
+    
+    ```bash
+    # Find the tag for the version
+    git tag | grep <version>
+    
+    # Checkout the tag or commit
+    git checkout <tag-or-commit>
+    ```
+    
+    The commit hash or tag should match the version you're verifying.
+  </Step>
+
+  <Step title="Run Verification Script">
+    Execute the automated verification script:
+    
+    ```bash
+    tools/verify-apollo.sh apollo-play.apk
+    ```
+    
+    This process takes 10-20 minutes as it performs a full reproducible build.
+  </Step>
+
+  <Step title="Review Results">
+    The script will output either:
+    
+    **Success:**
+    ```
+    Verification success!
+    ```
+    
+    **Failure:**
+    ```
+    Verification failed :(
+    Leaving baseline and to_verify directories at <path> for inspection
+    ```
+  </Step>
+</Steps>
+
+## How Verification Works
+
+The `verify-apollo.sh` script performs the following steps:
+
+### 1. Build from Source
+
+```bash
+DOCKER_BUILDKIT=1 docker build -f android/Dockerfile -o apk .
+```
+
+Performs a reproducible build to generate baseline APKs.
+
+### 2. Extract APK Contents
+
+Unzips both the APK to verify and the freshly built APK:
+
+```bash
+unzip -q -o "$apk_to_verify" -d "$tmp/to_verify"
+unzip -q -o "$baseline_apk_dir" -d "$tmp/baseline"
+```
+
+### 3. Remove Signatures
+
+Removes signing-related files since open source builders won't have Muun's private keys:
+
+```bash
+rm -r "$tmp"/to_verify/{META-INF,resources.arsc}
+rm -r "$tmp"/baseline/{META-INF,resources.arsc}
+```
+
+### 4. Detect Architecture
+
+Determines the device architecture from the `/lib` directory:
+
+- `arm64-v8a` - 64-bit ARM
+- `armeabi-v7a` - 32-bit ARM  
+- `x86` - 32-bit x86
+- `x86_64` - 64-bit x86
+
+### 5. Compare Files
+
+Performs a recursive diff of all files:
+
+```bash
+diff -r "$tmp/to_verify" "$tmp/baseline"
+```
+
+If there are no differences, verification succeeds.
+
+## Understanding Results
+
+### Successful Verification
+
+When verification succeeds:
+
+- The installed APK matches the source code exactly
+- No files have been modified or injected
+- The app is authentic and unmodified
+
+### Failed Verification
+
+If verification fails, the script preserves the extracted directories for inspection:
+
+- `baseline/` - Contents of the freshly built APK
+- `to_verify/` - Contents of the installed APK
+
+You can manually inspect differences:
+
+```bash
+diff -r to_verify/ baseline/
+```
+
+Common reasons for failure:
+
+- Wrong git commit/tag checked out
+- APK was modified after signing
+- Different build environment (should not happen with Docker)
+- App was built with different tools/versions
+
+## Architecture-Specific Verification
+
+The script automatically selects the correct baseline APK based on your device architecture:
+
+| Device Architecture | Baseline APK |
+|-------------------|-------------|
+| arm64-v8a | apolloui-prod-arm64-v8a-release-unsigned.apk |
+| armeabi-v7a | apolloui-prod-armeabi-v7a-release-unsigned.apk |
+| x86 | apolloui-prod-x86-release-unsigned.apk |
+| x86_64 | apolloui-prod-x86_64-release-unsigned.apk |
+
+## Verifying Google Play APKs
+
+APKs downloaded from Google Play are signed by Google's Play App Signing service. The verification process:
+
+1. Removes the Google Play signature (in `META-INF/`)
+2. Compares the unsigned contents
+3. Ensures the code matches the source
+
+This verifies that Google Play received and signed an authentic build from the source code.
+
+## Verifying F-Droid Builds
+
+F-Droid performs their own reproducible builds. To verify F-Droid builds:
+
+1. Download the APK from F-Droid
+2. Follow the same verification process
+3. F-Droid signature will be removed during verification
+
+## Troubleshooting
+
+### ADB Device Not Found
+
+If `adb devices` shows no devices:
+
+```bash
+# Restart ADB server
+adb kill-server
+adb start-server
+
+# Check USB connection
+adb devices
+```
+
+### Wrong Commit Checked Out
+
+Verification will fail if you check out the wrong commit:
+
+```bash
+# View recent tags
+git tag --sort=-version:refname | head -10
+
+# Check current commit
+git log -1 --oneline
+```
+
+### Permission Denied
+
+If ADB permission is denied:
+
+```bash
+# On device, revoke and re-authorize USB debugging
+# Settings → Developer Options → Revoke USB Debugging Authorizations
+```
+
+### Build Failures
+
+If the Docker build fails during verification:
+
+- Ensure Docker has at least 16 GB RAM
+- Ensure at least 60 GB free disk space
+- See [Reproducible Builds](/development/reproducible-builds) for troubleshooting
+
+## Manual Verification
+
+For a deeper understanding, you can perform verification manually:
+
+<Steps>
+  <Step title="Extract Both APKs">
+    ```bash
+    mkdir verify baseline
+    unzip apollo-play.apk -d verify/
+    unzip apk/apolloui-prod-arm64-v8a-release-unsigned.apk -d baseline/
+    ```
+  </Step>
+
+  <Step title="Remove Signatures">
+    ```bash
+    rm -r verify/{META-INF,resources.arsc}
+    rm -r baseline/{META-INF,resources.arsc}
+    ```
+  </Step>
+
+  <Step title="Compare Directories">
+    ```bash
+    diff -r verify/ baseline/
+    ```
+    
+    No output means verification success.
+  </Step>
+</Steps>
+
+## Next Steps
+
+- [Reproducible Builds](/development/reproducible-builds) - Learn about the reproducible build process
+- [Building Locally](/development/building-locally) - Build the app for development
+- [Testing](/development/testing) - Run the test suite

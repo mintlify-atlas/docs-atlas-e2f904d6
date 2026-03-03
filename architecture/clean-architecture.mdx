@@ -1,0 +1,333 @@
+---
+title: 'Clean Architecture Pattern'
+description: 'Understanding how Muun Wallet implements clean architecture principles'
+---
+
+## What is Clean Architecture?
+
+Clean Architecture is a software design philosophy that emphasizes separation of concerns and independence of frameworks, UI, databases, and external agencies. The Muun Wallet follows this pattern to achieve:
+
+- **Testability**: Business logic can be tested without UI or database
+- **Maintainability**: Clear boundaries make code easier to understand and modify
+- **Flexibility**: Easy to swap implementations (e.g., change database or UI framework)
+- **Scalability**: Well-organized code that grows predictably
+
+<Note>
+Muun's implementation is based on Fernando Cejas's Android Clean Architecture approach, adapted for a Bitcoin wallet's security requirements.
+</Note>
+
+## Core Principles
+
+### 1. Dependency Rule
+
+The fundamental rule of clean architecture: **dependencies point inward**.
+
+```
+┌─────────────────────────────────────┐
+│         Presentation Layer          │  Depends on ↓
+│  (Activities, Fragments, Presenters)│
+└─────────────────────────────────────┘
+                 ↓
+┌─────────────────────────────────────┐
+│           Domain Layer              │  Depends on ↓
+│    (Models, Actions, Business Logic)│
+└─────────────────────────────────────┘
+                 ↓
+┌─────────────────────────────────────┐
+│            Data Layer               │  No upward dependencies
+│   (Repositories, DAOs, Network)     │
+└─────────────────────────────────────┘
+```
+
+<Info>
+**Critical Security Practice**: The presentation layer never directly accesses the data layer. This prevents UI code from bypassing business logic and security checks.
+</Info>
+
+### 2. Abstraction at Boundaries
+
+Layers communicate through interfaces and abstractions:
+
+- Domain defines interfaces for data operations
+- Data layer implements these interfaces
+- Presentation depends on domain abstractions, not concrete implementations
+
+### 3. Independent of Frameworks
+
+Business logic doesn't depend on Android framework:
+
+- Domain models are pure Java/Kotlin classes
+- Business rules work without Activity or Context
+- Can be tested without Android runtime
+
+### 4. Independent of UI
+
+Business logic is separate from UI:
+
+- Changing UI doesn't affect business rules
+- Same domain logic could power different UIs (mobile, web, CLI)
+- UI is replaceable without touching core logic
+
+## Layer Responsibilities
+
+### Presentation Layer: What Users See
+
+**Package**: `io.muun.apollo.presentation`
+
+**Responsibilities**:
+- Display data to users
+- Capture user input
+- Respond to user interactions
+- Navigate between screens
+
+**Does NOT**:
+- Make business decisions
+- Access database directly
+- Call network APIs directly
+- Perform cryptographic operations
+
+**Example Structure**:
+```
+presentation/
+├── app/              # Application class, DI setup
+├── ui/
+│   ├── base/         # Base classes (BaseActivity, BasePresenter)
+│   ├── fragments/    # Feature fragments
+│   └── home/         # Home screen components
+└── model/            # Presentation-specific models
+```
+
+### Domain Layer: Business Logic Core
+
+**Package**: `io.muun.apollo.domain`
+
+**Responsibilities**:
+- Implement business rules
+- Define domain models
+- Orchestrate data operations
+- Make decisions about when to sign transactions
+- Validate business constraints
+
+**Does NOT**:
+- Know about Activities or Views
+- Know about database implementation
+- Know about network protocol details
+
+**Example Structure**:
+```
+domain/
+├── action/           # Use cases (business operations)
+│   ├── base/         # Base action classes
+│   ├── address/      # Address-related actions
+│   └── *.java        # Top-level actions
+├── model/            # Domain models
+│   ├── user/         # User-related models
+│   └── *.kt          # Other domain entities
+├── selector/         # Data selectors/queries
+└── errors/           # Domain-specific errors
+```
+
+### Data Layer: External World Gateway
+
+**Package**: `io.muun.apollo.data`
+
+**Responsibilities**:
+- Persist data to database
+- Fetch data from network
+- Interact with Android OS
+- Cache and synchronize data
+
+**Does NOT**:
+- Make business decisions
+- Know about UI components
+- Implement business validation
+
+**Example Structure**:
+```
+data/
+├── db/               # Database (SQLite, DAOs)
+├── net/              # Network clients (Houston API)
+├── preferences/      # SharedPreferences repositories
+├── os/               # OS integrations
+├── fs/               # File system operations
+└── apis/             # External APIs (Drive, etc.)
+```
+
+## Communication Between Layers
+
+### Using Actions (Use Cases)
+
+Actions are the primary way to execute business logic. They follow a consistent pattern:
+
+```java
+// Domain layer: Define the action
+public class SigninActions {
+    private final AuthRepository authRepository;
+
+    @Inject
+    public SigninActions(AuthRepository authRepository) {
+        this.authRepository = authRepository;
+    }
+
+    public Optional<SessionStatus> getSessionStatus() {
+        return authRepository.getSessionStatus();
+    }
+
+    public void clearSession() {
+        authRepository.clearSession();
+    }
+}
+```
+
+Example from: `domain/action/SigninActions.java:11`
+
+<Tip>
+Actions are injected via Dagger, making them easy to test with mock repositories.
+</Tip>
+
+### Async Actions with RxJava
+
+Many actions are asynchronous and return RxJava Observables:
+
+```java
+public abstract class BaseAsyncAction1<T, R> extends BaseAsyncAction<R> {
+
+    public abstract Observable<R> action(T t);
+
+    public void run(T t) {
+        super.run(action(t));
+    }
+
+    public R actionNow(T t) {
+        return action(t).toBlocking().first();
+    }
+}
+```
+
+Example from: `domain/action/base/BaseAsyncAction1.java:5`
+
+### Repository Pattern
+
+Repositories in the data layer provide clean interfaces:
+
+- Hide implementation details (SQL, HTTP, etc.)
+- Return domain models, not database entities
+- Use RxJava for async operations
+
+## Dependency Injection with Dagger
+
+Muun uses Dagger 2 for dependency injection, which enforces clean architecture:
+
+```
+ApplicationComponent (Singleton scope)
+        ↓
+    DomainModule (Actions, Managers)
+        ↓
+    DataModule (Repositories, DAOs, API clients)
+```
+
+<Info>
+Dagger's compile-time dependency graph ensures that the dependency rule isn't violated. If presentation tried to inject a data component directly, the build would fail.
+</Info>
+
+## Testing Strategy
+
+### Unit Tests
+
+Clean architecture makes unit testing straightforward:
+
+- **Domain layer**: Test actions with mocked repositories
+- **Data layer**: Test repositories with mocked DAOs/APIs
+- **Presentation layer**: Test presenters with mocked actions
+
+### Integration Tests
+
+- Test domain + data together with real database
+- Test domain + data with mocked network
+- Test full stack with test doubles
+
+### What Gets Tested
+
+```
+Presentation Tests: UI logic, navigation, view state
+Domain Tests: Business rules, validation, calculations
+Data Tests: Database queries, API mapping, caching
+```
+
+## Security Benefits
+
+Clean architecture provides security advantages for a Bitcoin wallet:
+
+<Note>
+**Key Security Checkpoints**
+
+1. **Centralized Validation**: All business rules in domain layer
+2. **No Bypass Routes**: UI can't skip validation by accessing data directly
+3. **Auditable**: Security-critical code is isolated in domain/common
+4. **Testable**: Cryptographic operations can be thoroughly tested
+</Note>
+
+### Auditing Focus Areas
+
+When auditing Muun's code for security:
+
+1. **Common Module**: Key handling and transaction crafting
+   - Most cryptographic operations
+   - Bitcoin protocol implementation
+   
+2. **Data Layer**: Keystore and data persistence
+   - Where keys are stored (secure storage)
+   - Data serialization/deserialization
+   
+3. **Domain Layer**: When to sign what
+   - Authorization logic
+   - Transaction approval flow
+   - User verification
+
+## Anti-Patterns to Avoid
+
+<Warning>
+**Clean Architecture Violations**
+
+- ❌ Presentation layer importing from data layer
+- ❌ Domain layer depending on Android framework classes
+- ❌ Business logic in Activities or Fragments
+- ❌ Direct database access from presenters
+- ❌ UI code making network calls
+</Warning>
+
+## Benefits for Muun Wallet
+
+### Maintainability
+
+- Clear file organization by feature and layer
+- Easy to find where logic belongs
+- Changes isolated to single layer
+
+### Security
+
+- Critical code isolated and auditable
+- No accidental bypass of security checks
+- Testable cryptographic operations
+
+### Scalability
+
+- New features follow established patterns
+- Multiple developers can work on different layers
+- Clear interfaces between components
+
+### Flexibility
+
+- Can swap database implementation
+- Can change network layer
+- UI can be redesigned without touching business logic
+
+## Further Reading
+
+<CardGroup cols={2}>
+  <Card title="Fernando Cejas - Clean Architecture" icon="link" href="https://fernandocejas.com/2014/09/03/architecting-android-the-clean-way/">
+    Original blog post that inspired Muun's architecture
+  </Card>
+  <Card title="Clean Architecture Evolution" icon="link" href="https://fernandocejas.com/2015/07/18/architecting-android-the-evolution/">
+    Follow-up post on clean architecture patterns
+  </Card>
+</CardGroup>

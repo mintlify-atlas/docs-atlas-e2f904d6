@@ -1,0 +1,499 @@
+---
+title: "NFC Security Card Integration"
+description: "How Muun Wallet uses NFC security cards as a hardware second factor for enhanced transaction security"
+icon: "credit-card"
+---
+
+## Overview
+
+Muun Wallet supports **NFC security cards** as a hardware-based second authentication factor. Security cards provide an additional layer of protection by requiring physical possession of the card to authorize sensitive operations.
+
+<Note>
+Security cards are an optional feature. Users can choose to use them for enhanced security or rely solely on device-based authentication.
+</Note>
+
+## What is a Security Card?
+
+A security card is a:
+
+- **Physical NFC card** similar to a credit card
+- **Cryptographic hardware device** that can sign challenges
+- **Portable second factor** that doesn't require batteries or charging
+- **Backup authentication method** alongside device-based keys
+
+### Use Cases
+
+<Tip>
+- **High-value transactions**: Require physical card tap to authorize
+- **Account recovery**: Use card as part of multi-factor recovery
+- **Hardware security**: Cryptographic operations isolated from device
+- **Portable 2FA**: Works with any NFC-enabled phone
+</Tip>
+
+## How It Works
+
+### NFC Communication
+
+The wallet communicates with security cards using **ISO-DEP** (ISO 14443-4) protocol:
+
+```kotlin
+// From NfcReaderViewModel.kt:88
+internal fun onNewNfcSession(nfcSession: NfcSession) {
+    analytics.report(AnalyticsEvent.E_SECURITY_CARD_TAP(DETECTED))
+    
+    viewModelScope.launch {
+        _viewState.emit(ViewState.Reading)
+        try {
+            handleSignChallenge(nfcSession)
+            analytics.report(AnalyticsEvent.E_SECURITY_CARD_SIGN_SUCCESS())
+            _viewCommand.emit(ViewCommand.Success)
+        } catch (error: Exception) {
+            // Handle errors
+        }
+    }
+}
+```
+
+Source: `android/apolloui/src/main/java/io/muun/apollo/presentation/ui/nfc/NfcReaderViewModel.kt:96-104`
+
+### Challenge-Response Authentication
+
+```kotlin
+// From NfcReaderViewModel.kt:145
+private suspend fun handleSignChallenge(nfcSession: NfcSession) {
+    withContext(Dispatchers.IO) {
+        nfcSession.connect()
+        val nfcBridger = nfcBridgerFactory.forSession(nfcSession)
+        val challengeMessage = "testing NFC in Android"
+        
+        if (featureSelector.get(MuunFeature.NFC_CARD)) {
+            val signedMessageHex = libwalletClient.securityCardSignMessage(
+                nfcBridger,
+                challengeMessage
+            )
+        } else if (featureSelector.get(MuunFeature.NFC_CARD_V2)) {
+            libwalletClient.securityCardV2SignMessage(nfcBridger)
+        }
+        
+        nfcSession.close()
+    }
+}
+```
+
+**Authentication Flow:**
+
+1. **User initiates action** requiring security card
+2. **App generates challenge** (random message)
+3. **User taps card** to phone
+4. **Card signs challenge** with its private key
+5. **App verifies signature** using card's public key
+6. **Action authorized** if signature is valid
+
+## User Experience
+
+### Card Reading Interface
+
+Muun provides a sophisticated NFC reading experience:
+
+```kotlin
+// From NfcReaderActivity.kt:66
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    
+    initializeUi()
+    generateAppEvent("s_nfc_reader")
+    loadBoundaryData()
+    
+    lifecycleScope.launch {
+        repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.viewCommand.collect { viewCommand ->
+                    when (viewCommand) {
+                        is ViewCommand.Success -> {
+                            generateAppEvent("nfc_reading_success")
+                            vibrateShort()
+                            disableReaderMode()
+                            viewModel.securityCard2faSuccess(this@NfcReaderActivity)
+                        }
+                        is ViewCommand.Error -> {
+                            handleNfcError(viewCommand)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### Antenna Position Detection
+
+The app helps users locate the NFC antenna:
+
+```kotlin
+// From NfcReaderViewModel.kt:246
+internal fun getAntennaPosition(): Pair<Float, Float>? {
+    return metricsProvider.nfcAntennaPosition.firstOrNull()
+}
+```
+
+```kotlin
+// From NfcReaderActivity.kt:190
+viewModel.getAntennaPosition()?.let {
+    container.attachChildAtMm(
+        childView = nfcSensorView,
+        originXmm = it.first,
+        originYmm = it.second,
+        modifications = { pxPos ->
+            pxPos * 0.5f // -50% shift for positioning in the middle
+        },
+    )
+}
+```
+
+**UI Features:**
+
+- **Visual guide**: Shows where to tap the card on the device
+- **Antenna position**: Device-specific NFC antenna location
+- **Haptic feedback**: Vibrates when card is detected
+- **Real-time status**: "Scanning" vs "Reading" states
+- **Error handling**: Clear messages for common issues
+
+Source: `android/apolloui/src/main/java/io/muun/apollo/presentation/ui/nfc/NfcReaderActivity.kt:190-199`
+
+### Feasible Zone Visualization
+
+Muun displays a "feasible zone" showing the optimal card placement area:
+
+```kotlin
+// From NfcReaderActivity.kt:218
+private fun setBoundaryData(feasibleZone: FeasibleZone) {
+    binding.nfcFeasibleAreaView.apply {
+        setData(feasibleZone)
+    }
+}
+```
+
+This helps users:
+- Find the NFC antenna quickly
+- Position the card correctly
+- Avoid failed read attempts
+
+## Security Features
+
+### Challenge Keys
+
+Security cards use special challenge keys derived from the recovery code:
+
+```go
+// From challenge_keys.go:29
+type ChallengePrivateKey struct {
+    key *btcec.PrivateKey
+}
+
+func NewChallengePrivateKey(input, salt []byte) *ChallengePrivateKey {
+    key := Scrypt256(input, salt)
+    priv, _ := btcec.PrivKeyFromBytes(key)
+    
+    return &ChallengePrivateKey{key: priv}
+}
+```
+
+### Signature Verification
+
+```go
+// From challenge_keys.go:66
+func (k *ChallengePrivateKey) SignSha(payload []byte) ([]byte, error) {
+    hash := sha256.Sum256(payload)
+    sig := ecdsa.Sign(k.key, hash[:])
+    return sig.Serialize(), nil
+}
+```
+
+The card:
+- Derives a private key from the recovery code
+- Signs challenges with ECDSA
+- Returns compact signature format
+- Never exposes the private key
+
+Source: `libwallet/challenge_keys.go:29-72`
+
+### MAC Validation
+
+```kotlin
+// From NfcReaderViewModel.kt:130
+if (errorDetail?.code == ErrorDetailCode.SIGN_MAC_VALIDATION_FAILED.code) {
+    "Invalid Signature Verification! You're probably tapping with another " +
+        "(incorrect) security card"
+}
+```
+
+The wallet validates:
+- Signature matches the expected public key
+- Card is the correct one for this wallet
+- No tampering or replay attacks
+
+<Warning>
+If you tap with the wrong security card, the signature validation will fail and the operation will be rejected.
+</Warning>
+
+## Sensor Data Collection
+
+Muun collects sensor data to improve NFC tap detection:
+
+```kotlin
+// From NfcReaderViewModel.kt:203
+internal fun subscribeToAllSensors(context: Context, lifecycleOwner: LifecycleOwner) {
+    if (!featureSelector.get(MuunFeature.NFC_SENSORS)) {
+        return
+    }
+    
+    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    
+    val mergedFlow = merge(
+        SensorUtils.mergedSensorFlow(sensorManager),
+        appEvents,
+    )
+    
+    sensorJob = lifecycleOwner.lifecycleScope.launch {
+        mergedFlow.collect { event ->
+            storeSensorsDataAction.run(event)
+        }
+    }
+}
+```
+
+Sensors monitored:
+- **Accelerometer**: Detect phone movement during tap
+- **Gyroscope**: Track phone rotation
+- **Magnetometer**: Detect magnetic field from card
+- **Pressure**: Detect when user presses card to phone
+- **Gestures**: Track touch events
+
+This data helps:
+- Improve tap success rate
+- Provide better user guidance
+- Detect optimal antenna positions per device
+- Debug NFC reading issues
+
+Source: `android/apolloui/src/main/java/io/muun/apollo/presentation/ui/nfc/NfcReaderViewModel.kt:203-221`
+
+## Error Handling
+
+### Common Errors
+
+```kotlin
+// From NfcReaderActivity.kt:116
+private fun handleNfcError(error: ViewCommand.Error) {
+    generateAppEvent("nfc_reading_error")
+    
+    showError(
+        ErrorViewModel.Builder()
+            .loggingName(AnalyticsEvent.ERROR_TYPE.NFC_2FA_FAILED)
+            .kind(ErrorViewModel.ErrorViewKind.REPORTABLE)
+            .title("Error Reading Security Card")
+            .description(error.message)
+            .canGoBack(true)
+            .build()
+    )
+}
+```
+
+**Error Types:**
+
+1. **NFC Disabled**: User hasn't enabled NFC in system settings
+2. **Wrong Card**: MAC validation fails (wrong security card)
+3. **Communication Error**: Card read timeout or connection issue
+4. **No Slots Available**: Card storage full (backend issue)
+
+### NFC Settings Prompt
+
+```kotlin
+// From NfcReaderActivity.kt:153
+if (!isNfcEnabled()) {
+    generateAppEvent("nfc_disabled_dialog")
+    MuunDialog.Builder()
+        .title(R.string.nfc_reader_screen_title)
+        .message(R.string.nfc_reader_screen_enable_nfc)
+        .positiveButton(R.string.nfc_reader_screen_go_to_configs) {
+            startActivity(Intent(android.provider.Settings.ACTION_NFC_SETTINGS))
+        }
+        .negativeButton(R.string.cancel) {
+            finishActivity()
+        }
+        .build()
+        .let(::showDialog)
+}
+```
+
+If NFC is disabled, the app:
+- Detects this immediately on screen load
+- Prompts user to enable NFC
+- Provides direct link to system settings
+- Allows user to cancel and return
+
+## Feature Flag Management
+
+### Disabling Security Card
+
+```kotlin
+// From NfcReaderActivity.kt:133
+private fun handleDisableSecurityCardFlag() {
+    MuunDialog.Builder()
+        .title(R.string.nfc_reader_screen_disable_ff_title)
+        .message(R.string.nfc_reader_screen_disable_ff_desc)
+        .positiveButton(R.string.nfc_reader_screen_disable_ff_yes) {
+            viewModel.disableSecurityCardFF()
+            finishActivity()
+        }
+        .negativeButton(R.string.no) {
+            viewModel.cancelDisableSecurityCardFF()
+        }
+        .build()
+        .let(::showDialog)
+}
+```
+
+If backend returns `NO_SLOTS_AVAILABLE` error:
+- User is prompted to disable security card feature
+- This is a backend capacity issue
+- User can choose to disable or keep trying
+
+Source: `android/apolloui/src/main/java/io/muun/apollo/presentation/ui/nfc/NfcReaderActivity.kt:133-146`
+
+## Implementation Details
+
+### Reader Mode
+
+```kotlin
+// From NfcReaderActivity.kt:238
+private fun enableReaderMode() {
+    nfcReaderModeExtension.enableReaderMode()
+}
+
+private fun disableReaderMode() {
+    nfcReaderModeExtension.disableReaderMode()
+}
+```
+
+Reader mode:
+- Activates when screen is visible (`onResume`)
+- Deactivates when screen is hidden (`onPause`)
+- Prevents conflicts with other NFC apps
+- Provides fastest possible card detection
+
+### NFC Session Management
+
+```kotlin
+// From NfcReaderActivity.kt:234
+override fun onNewNfcSession(nfcSession: NfcSession) {
+    viewModel.onNewNfcSession(nfcSession)
+}
+```
+
+When a card is detected:
+1. System creates `NfcSession` from the tag
+2. Session is passed to view model
+3. View model handles signing in background coroutine
+4. UI updates based on result
+
+### Analytics Tracking
+
+```kotlin
+// From NfcReaderViewModel.kt:97
+analytics.report(AnalyticsEvent.E_SECURITY_CARD_TAP(SECURITY_CARD_TAP_PARAM.DETECTED))
+
+// On success:
+analytics.report(AnalyticsEvent.E_SECURITY_CARD_SIGN_SUCCESS())
+
+// On error:
+analytics.report(
+    E_ERROR(
+        ERROR_TYPE.NFC_2FA_FAILED,
+        error,
+        "errorMessage" to errorMessage
+    )
+)
+```
+
+Events tracked:
+- Card tap detected
+- Sign success/failure
+- Error types and messages
+- User actions (disable flag, etc.)
+
+## Privacy Considerations
+
+### What's Private
+
+- Security card never exposes private key
+- Signatures are unique per challenge (no replay)
+- NFC communication is short-range only
+- Card identity not revealed to third parties
+
+### What's Collected
+
+- Sensor data during NFC reading (if feature enabled)
+- Success/failure metrics
+- Error types and frequencies
+- Device antenna positions
+
+<Note>
+Sensor data collection is behind a feature flag (`MuunFeature.NFC_SENSORS`) and can be disabled.
+</Note>
+
+## Best Practices
+
+### For Users
+
+<Tip>
+- **Store safely**: Keep security card in wallet, not with phone
+- **Backup recovery code**: Card can be recreated from recovery code
+- **Test regularly**: Ensure card works before emergency
+- **Keep clean**: Dirty or damaged cards may not read properly
+</Tip>
+
+### For Developers
+
+- Always handle NFC disabled state gracefully
+- Provide clear visual guidance for card placement
+- Implement proper timeout handling
+- Test on multiple device models (antenna positions vary)
+- Handle reader mode lifecycle correctly
+
+## Security Card Versions
+
+```kotlin
+// From NfcReaderViewModel.kt:151
+if (featureSelector.get(MuunFeature.NFC_CARD)) {
+    // Original security card implementation
+    val signedMessageHex = libwalletClient.securityCardSignMessage(
+        nfcBridger,
+        challengeMessage
+    )
+} else if (featureSelector.get(MuunFeature.NFC_CARD_V2)) {
+    // V2 implementation with improvements
+    libwalletClient.securityCardV2SignMessage(nfcBridger)
+}
+```
+
+Muun supports two security card versions:
+
+- **V1 (`NFC_CARD`)**: Original implementation
+- **V2 (`NFC_CARD_V2`)**: Enhanced version with better security
+
+Both versions use the same physical cards but different signing protocols.
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Emergency Kit" icon="file-shield" href="/features/emergency-kit">
+    How security cards integrate with emergency recovery
+  </Card>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    Using security cards in wallet recovery
+  </Card>
+  <Card title="Multisig" icon="key" href="/features/multisig">
+    How security cards complement multisig architecture
+  </Card>
+</CardGroup>

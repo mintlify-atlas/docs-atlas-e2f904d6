@@ -1,0 +1,525 @@
+---
+title: MuSig2 Implementation
+description: Multi-signature Schnorr signing protocol for 2-of-2 cooperative spending
+---
+
+## Overview
+
+Muun's MuSig2 implementation enables 2-of-2 multi-signature cooperative spending using Schnorr signatures. The implementation supports two protocol versions: a Muun-specific v0.4.0 variant and the standard v1.0.0 BIP draft.
+
+<Note>
+MuSig2 is a multi-signature scheme for Schnorr signatures described in the [MuSig2 BIP draft](https://github.com/jonasnick/bips/blob/musig2/bip-musig2.mediawiki). It enables key aggregation and efficient multi-signatures.
+</Note>
+
+## Protocol Versions
+
+The implementation supports two MuSig2 protocol versions:
+
+### Version 0.4.0 (Muun-specific)
+
+```go
+Musig2v040Muun MusigVersion = 40
+```
+
+- Based on secp256k1_zkp implementation at specific commit
+- Nonces generated with random entropy from sessionId only
+- Key order enforced as `[user, muun]` (no sorting)
+- xOnly keys required
+- Limited tweak support (BIP86 only)
+- Used for backward compatibility
+
+### Version 1.0.0 (Standard)
+
+```go
+Musig2v100 MusigVersion = 100
+```
+
+- Based on btcsuite/btcd v1.0.0rc2 implementation
+- Full BIP draft compliance
+- Supports key sorting
+- Supports multiple tweak types
+- Supports BIP32+BIP328 unhardened derivation
+- Recommended for new implementations
+
+## Key Concepts
+
+### Nonce Generation
+
+Secure nonce generation is critical for MuSig2 security. Nonces must never be reused:
+
+```go
+// Generate random session ID (never reuse!)
+sessionId := RandomSessionId()
+
+// Generate nonce for signing
+nonce, err := MuSig2GenerateNonce(
+    Musig2v100,
+    sessionId,
+    publicKeyBytes,
+)
+if err != nil {
+    // Handle error
+}
+```
+
+<Note>
+**Critical Security Warning**: Session IDs must be cryptographically random and never reused. Reusing a session ID compromises the private key.
+</Note>
+
+### Key Aggregation
+
+Combine multiple public keys into a single aggregated key:
+
+```go
+// Parse public keys
+pubKeys := [][]byte{
+    userPublicKey,
+    muunPublicKey,
+}
+
+// Combine with BIP86 taproot tweak
+tweak := KeySpendOnlyTweak()
+aggregatedKey, err := Musig2CombinePubKeysWithTweak(
+    Musig2v100,
+    pubKeys,
+    tweak,
+)
+if err != nil {
+    // Handle error
+}
+
+// Get the final output key
+outputKey := aggregatedKey.FinalKey
+```
+
+### Tweaks
+
+Tweaks modify the aggregated key for different use cases:
+
+#### BIP86 Taproot Key Path Spend
+
+```go
+// For key-path-only spending (no script path)
+tweak := KeySpendOnlyTweak()
+// Computes: Q = P + hash_tapTweak(P) * G
+```
+
+#### Taproot Script Path
+
+```go
+// For taproot with script tree
+rootNodeHash := computeTaprootScriptTree(...)
+tweak := TapScriptTweak(rootNodeHash)
+// Computes: Q = P + hash_tapTweak(P || rootHash) * G
+```
+
+#### No Tweak (Internal Key)
+
+```go
+// For signing during script path spend
+tweak := NoopTweak()
+// Returns internal key without modification
+```
+
+#### BIP32 Unhardened Derivation (v1.0.0 only)
+
+```go
+// Derive child keys using BIP32 + BIP328
+path := []uint32{0, 5}  // Unhardened derivation path
+tweak := KeySpendOnlyTweak().WithUnhardenedDerivationPath(path)
+```
+
+## Signing Protocol
+
+### 2-of-2 Signing Flow
+
+Complete flow for creating a MuSig2 signature:
+
+```go
+func create2of2Signature(
+    data [32]byte,
+    userPrivateKey []byte,
+    muunPublicKey []byte,
+    muunPublicNonce []byte,
+    muunPartialSig []byte,
+) ([]byte, error) {
+    // 1. Generate session ID (MUST be random)
+    sessionId := RandomSessionId()
+    
+    // 2. Parse keys
+    userPrivKey := secp256k1.PrivKeyFromBytes(userPrivateKey)
+    userPubKey := userPrivKey.PubKey()
+    userPubKeyBytes := userPubKey.SerializeCompressed()
+    
+    signerKeys := [][]byte{
+        userPubKeyBytes,
+        muunPublicKey,
+    }
+    
+    parsedKeys, err := MuSig2ParsePubKeys(Musig2v100, signerKeys)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 3. Generate local nonce
+    userNonce, err := MuSig2GenerateNonce(
+        Musig2v100,
+        sessionId,
+        userPubKeyBytes,
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    // 4. Create signing context
+    tweak := KeySpendOnlyTweak()
+    _, session, err := MuSig2CreateContext(
+        Musig2v100,
+        userPrivKey,
+        parsedKeys,
+        tweak,
+        userNonce,
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    // 5. Register other party's nonce
+    haveAllNonces, err := session.RegisterPubNonce(
+        [66]byte(muunPublicNonce),
+    )
+    if err != nil {
+        return nil, err
+    }
+    if !haveAllNonces {
+        return nil, errors.New("missing nonces")
+    }
+    
+    // 6. Create our partial signature
+    _, err = MuSig2Sign(session, data)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 7. Combine with other party's partial signature
+    otherSig, err := DeserializePartialSignature(muunPartialSig)
+    if err != nil {
+        return nil, err
+    }
+    
+    haveAllSigs, err := MuSig2CombineSig(session, otherSig)
+    if err != nil {
+        return nil, err
+    }
+    if !haveAllSigs {
+        return nil, errors.New("missing signatures")
+    }
+    
+    // 8. Get final valid signature
+    finalSig := session.FinalSig()
+    return finalSig.Serialize()[:], nil
+}
+```
+
+## API Reference
+
+### Nonce Operations
+
+#### RandomSessionId
+
+```go
+func RandomSessionId() [32]byte
+```
+
+Generate a cryptographically random session ID. Must be called for each signature.
+
+#### MuSig2GenerateNonce
+
+```go
+func MuSig2GenerateNonce(
+    musigVersion MusigVersion,
+    sessionId []byte,
+    publicKeyBytes []byte,
+) (*Nonces, error)
+```
+
+Generate public and secret nonces for a signing session.
+
+### Key Operations
+
+#### MuSig2ParsePubKeys
+
+```go
+func MuSig2ParsePubKeys(
+    musigVersion MusigVersion,
+    rawPubKeys [][]byte,
+) ([]*btcec.PublicKey, error)
+```
+
+Parse raw public key bytes into the appropriate format for the MuSig version.
+
+#### Musig2CombinePubKeysWithTweak
+
+```go
+func Musig2CombinePubKeysWithTweak(
+    musigVersion MusigVersion,
+    pubKeys [][]byte,
+    tweaks *MuSig2Tweaks,
+) (*AggregateKey, error)
+```
+
+Combine public keys into an aggregated key with optional tweaks.
+
+### Signing Operations
+
+#### MuSig2CreateContext
+
+```go
+func MuSig2CreateContext(
+    musigVersion MusigVersion,
+    privKey *btcec.PrivateKey,
+    allSignerPubKeys []*btcec.PublicKey,
+    tweaks *MuSig2Tweaks,
+    localNonces *Nonces,
+) (MuSig2Context, MuSig2Session, error)
+```
+
+Create a signing context and session for a MuSig2 signature.
+
+#### MuSig2Sign
+
+```go
+func MuSig2Sign(
+    session MuSig2Session,
+    msg [32]byte,
+) (*PartialSignature, error)
+```
+
+Generate a partial signature for the message.
+
+#### MuSig2CombineSig
+
+```go
+func MuSig2CombineSig(
+    session MuSig2Session,
+    otherPartialSig *PartialSignature,
+) (bool, error)
+```
+
+Combine another party's partial signature. Returns true when all signatures are collected.
+
+### Verification
+
+#### VerifySignature
+
+```go
+func VerifySignature(
+    musigVersion MusigVersion,
+    data []byte,
+    publicKey []byte,
+    signature []byte,
+) (bool, error)
+```
+
+Verify a Schnorr signature against a public key.
+
+## Muun-Specific Helpers
+
+Muun implements helper functions for the user-muun 2-of-2 signing flow:
+
+### Muun Partial Signature (First Signer)
+
+```go
+func ComputeMuunPartialSignature(
+    musigVersion MusigVersion,
+    data []byte,
+    userPublicKeyBytes []byte,
+    muunPrivateKeyBytes []byte,
+    rawUserPublicNonce []byte,
+    muunSessionId []byte,
+    tweak *MuSig2Tweaks,
+) ([]byte, error)
+```
+
+Muun computes its partial signature first, without needing the final signature.
+
+### User Partial Signature (Final Signer)
+
+```go
+func ComputeUserPartialSignature(
+    musigVersion MusigVersion,
+    data []byte,
+    userPrivateKeyBytes []byte,
+    muunPublicKeyBytes []byte,
+    muunPartialSigBytes []byte,
+    muunPublicNonceBytes []byte,
+    userSessionId []byte,
+    tweak *MuSig2Tweaks,
+) ([]byte, error)
+```
+
+User computes their partial signature and combines with Muun's to produce the final valid signature.
+
+## Security Considerations
+
+### Critical Rules
+
+1. **Never Reuse Session IDs**: Each signature must use a unique random session ID
+2. **Never Reuse Nonces**: Nonces are single-use only
+3. **Verify Final Signature**: Always validate the combined signature
+4. **Secure Key Storage**: Protect private keys and session secrets
+5. **Validate Peer Nonces**: Check that received nonces are valid points
+
+### Nonce Reuse Attack
+
+```go
+// WRONG - Reusing session ID
+sessionId := RandomSessionId()
+nonce1, _ := MuSig2GenerateNonce(version, sessionId, pubKey)
+nonce2, _ := MuSig2GenerateNonce(version, sessionId, pubKey) // CRITICAL BUG!
+
+// CORRECT - New session ID each time
+sessionId1 := RandomSessionId()
+nonce1, _ := MuSig2GenerateNonce(version, sessionId1, pubKey)
+
+sessionId2 := RandomSessionId()
+nonce2, _ := MuSig2GenerateNonce(version, sessionId2, pubKey)
+```
+
+<Note>
+**Security Warning**: Reusing a session ID or nonce completely compromises the private key. The attacker can extract the private key from two signatures made with the same nonce.
+</Note>
+
+## Version Compatibility
+
+### Migration from v0.4.0 to v1.0.0
+
+Key differences when upgrading:
+
+```go
+// v0.4.0 limitations
+// - No key sorting (fixed [user, muun] order)
+// - Only BIP86 tweak supported
+// - xOnly keys required
+tweak040 := KeySpendOnlyTweak()
+aggKey040, _ := Musig2CombinePubKeysWithTweak(
+    Musig2v040Muun,
+    pubKeys,
+    tweak040,
+)
+
+// v1.0.0 features
+// - Key sorting supported
+// - Multiple tweak types
+// - BIP32 derivation
+// - Compressed keys
+tweak100 := KeySpendOnlyTweak().WithUnhardenedDerivationPath([]uint32{0, 1})
+aggKey100, _ := Musig2CombinePubKeysWithTweak(
+    Musig2v100,
+    pubKeys,
+    tweak100,
+)
+```
+
+### v0.4.0 Restrictions
+
+The following features are **not available** in v0.4.0:
+
+```go
+// Generic tweaks - NOT SUPPORTED in v0.4.0
+tweak := &MuSig2Tweaks{
+    GenericTweaks: []KeyTweakDesc{{...}},
+}
+
+// Taproot script tweaks - NOT SUPPORTED in v0.4.0  
+tweak := TapScriptTweak(rootHash)
+
+// BIP32 derivation - NOT SUPPORTED in v0.4.0
+tweak := NoopTweak().WithUnhardenedDerivationPath(path)
+```
+
+## Examples
+
+### Generate Taproot Address
+
+```go
+func generateTaprootAddress(
+    userPubKey []byte,
+    muunPubKey []byte,
+    network *Network,
+) (string, error) {
+    pubKeys := [][]byte{userPubKey, muunPubKey}
+    tweak := KeySpendOnlyTweak()
+    
+    aggKey, err := Musig2CombinePubKeysWithTweak(
+        Musig2v100,
+        pubKeys,
+        tweak,
+    )
+    if err != nil {
+        return "", err
+    }
+    
+    // Create taproot address from output key
+    address := EncodeTaprootAddress(aggKey.FinalKey, network)
+    return address, nil
+}
+```
+
+### Complete Spending Flow
+
+```go
+func spendTaprootOutput(
+    userPrivKey []byte,
+    muunPubKey []byte,
+    txDigest [32]byte,
+) ([]byte, error) {
+    // 1. Exchange nonces (out of band)
+    userSessionId := RandomSessionId()
+    userNonce, _ := MuSig2GenerateNonce(
+        Musig2v100,
+        userSessionId,
+        userPrivKey,
+    )
+    userPubNonce := userNonce.PubNonce
+    
+    // Send userPubNonce to Muun, receive muunPubNonce
+    
+    // 2. Create Muun's partial signature
+    muunPartialSig, err := ComputeMuunPartialSignature(
+        Musig2v100,
+        txDigest[:],
+        userPubKey,
+        muunPrivKey,
+        userPubNonce[:],
+        muunSessionId,
+        KeySpendOnlyTweak(),
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    // 3. Create user's signature and combine
+    finalSig, err := ComputeUserPartialSignature(
+        Musig2v100,
+        txDigest[:],
+        userPrivKey,
+        muunPubKey,
+        muunPartialSig,
+        muunPubNonce[:],
+        userSessionId,
+        KeySpendOnlyTweak(),
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    return finalSig, nil
+}
+```
+
+## See Also
+
+- [Taproot Addresses](/api/addresses/taproot) - Creating taproot addresses
+- [Transaction Signing](/api/transaction-signing) - Using MuSig2 for transaction signing
+- [Emergency Kit](/guides/emergency-kit) - Recovery without MuSig2 cooperation

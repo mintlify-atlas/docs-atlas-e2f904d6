@@ -1,0 +1,207 @@
+---
+title: Requirements
+description: Runtime and build requirements for Muun Wallet
+---
+
+## Runtime Requirements
+
+To run Muun Wallet on an Android device, the following minimum specifications are required:
+
+<CardGroup cols={2}>
+  <Card title="Android Version" icon="android">
+    Android 5.0 (Lollipop) or higher
+    
+    **API Level 21+**
+  </Card>
+  <Card title="Google Services" icon="google">
+    Google Play Services required
+    
+    For Firebase and Play Integrity
+  </Card>
+</CardGroup>
+
+### SDK Configuration
+
+The app is configured with the following SDK levels:
+
+```gradle
+minSdk 21      // Android 5.0 (Lollipop)
+targetSdk 35   // Latest Android API
+compileSdk 35  // Compile against latest SDK
+```
+
+<Note>
+  The minimum SDK of 21 corresponds to Android 5.0 (Lollipop), released in 2014. This ensures broad device compatibility while maintaining modern Android features.
+</Note>
+
+## Build Requirements
+
+### Local Development Build
+
+To build Muun Wallet locally, you need the following tools installed:
+
+<Steps>
+  <Step title="OpenJDK">
+    **Version:** >= 8
+    
+    Download from [AdoptOpenJDK](https://adoptopenjdk.net/?variant=openjdk11&jvmVariant=hotspot)
+    
+    The project uses Java 17 for compilation:
+    ```gradle
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    ```
+  </Step>
+  
+  <Step title="Golang">
+    **Version:** = 1.24.x (exact version required)
+    
+    Download from [golang.org/dl](https://golang.org/dl/)
+    
+    <Warning>
+      Use exactly version 1.24.x for compatibility with the libwallet build scripts.
+    </Warning>
+  </Step>
+  
+  <Step title="Android NDK">
+    **Version:** >= 22
+    
+    Download from [Android NDK Downloads](https://developer.android.com/ndk/downloads)
+    
+    **Important:** Set the `ANDROID_NDK_HOME` environment variable:
+    ```bash
+    export ANDROID_NDK_HOME=/path/to/your/ndk
+    ```
+  </Step>
+  
+  <Step title="Docker">
+    **Version:** >= 28
+    
+    Download from [Docker Install Docs](https://docs.docker.com/engine/install/)
+    
+    <Note>
+      Docker must be running before executing build scripts.
+    </Note>
+  </Step>
+</Steps>
+
+### Kotlin Configuration
+
+The project uses Kotlin with the following JVM target:
+
+```gradle
+kotlinOptions {
+    jvmTarget = JavaVersion.VERSION_17.toString()
+}
+```
+
+## Reproducible Build Requirements
+
+For reproducible builds and APK verification:
+
+### Docker Resources
+
+<Warning>
+  Reproducible builds require significant Docker resources.
+</Warning>
+
+- **Docker Version:** >= 18.09
+- **RAM:** At least 16 GB allocated to Docker
+- **Disk Space:** At least 60 GB free
+
+### APK Verification Tools
+
+To verify an existing APK installation:
+
+- **Docker:** >= 18.09 (with 16 GB RAM and 60 GB disk)
+- **ADB:** [Android Debug Bridge](https://developer.android.com/studio/releases/platform-tools)
+
+<CodeGroup>
+
+```bash Install ADB (macOS)
+brew install android-platform-tools
+```
+
+```bash Install ADB (Ubuntu/Debian)
+sudo apt-get install android-tools-adb
+```
+
+```bash Verify ADB Installation
+adb --version
+# Should output: Android Debug Bridge version 1.0.x
+```
+
+</CodeGroup>
+
+## Build Dependencies
+
+### Core Libraries
+
+Muun depends on several key Android libraries:
+
+<CardGroup cols={2}>
+  <Card title="Navigation" icon="compass">
+    ```
+    navigation:2.7.7
+    ```
+    For fragment navigation and safe args
+  </Card>
+  
+  <Card title="WorkManager" icon="clock">
+    ```
+    work-runtime:2.9.0
+    ```
+    For background task scheduling
+  </Card>
+  
+  <Card title="Firebase" icon="fire">
+    ```
+    firebase-bom:32.6.0
+    ```
+    For crashlytics and analytics
+  </Card>
+  
+  <Card title="gRPC" icon="network-wired">
+    ```
+    grpc:1.57.2
+    ```
+    For backend communication
+  </Card>
+</CardGroup>
+
+### Bitcoin & Cryptography
+
+The wallet includes native cryptographic libraries:
+
+- **libwallet**: Custom Bitcoin and Lightning library (Rust + Go)
+- **Protobuf**: Version 4.29.3 for protocol buffers
+- **BitcoinJ**: For Bitcoin operations (via common module)
+
+<Note>
+  The native libraries must be built before assembling the APK. See the [Quick Start](/quickstart) guide for build instructions.
+</Note>
+
+## Development Tools
+
+### Optional Tools
+
+These tools are useful for development but not required for building:
+
+- **Android Studio**: Latest stable version recommended
+- **Git**: For version control
+- **Gradle**: Included via wrapper (`./gradlew`)
+
+### Debug Tools
+
+The debug build includes additional development tools:
+
+```gradle
+debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.12'
+debugImplementation 'com.github.markzhai:blockcanary-android:1.5.0'
+```
+
+<Note>
+  These tools are automatically excluded from release builds to minimize APK size.
+</Note>

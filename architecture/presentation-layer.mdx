@@ -1,0 +1,807 @@
+---
+title: 'Presentation Layer'
+description: 'UI implementation, MVP pattern, and view components in Muun Wallet'
+---
+
+## Overview
+
+The presentation layer (`io.muun.apollo.presentation`) contains all UI code for Muun Wallet. It implements the Model-View-Presenter (MVP) pattern and strictly depends only on the domain layer.
+
+<Note>
+**Critical Architecture Rule**: The presentation layer never directly accesses the data layer. All data operations go through domain actions.
+</Note>
+
+## Layer Structure
+
+```
+presentation/
+├── app/                 # Application setup and infrastructure
+│   ├── di/              # Dependency injection (Dagger)
+│   ├── startup/         # App initialization
+│   └── ApolloApplication.kt
+├── ui/                  # User interface components
+│   ├── base/            # Base classes (BaseActivity, BasePresenter)
+│   ├── activity/        # Activities and extensions
+│   ├── fragments/       # Feature fragments
+│   ├── adapter/         # RecyclerView adapters
+│   ├── bundler/         # State bundlers
+│   └── [features]/      # Feature-specific UI
+├── model/               # Presentation models
+├── biometrics/          # Biometric authentication
+├── export/              # Export functionality (PDF, etc.)
+└── sensors/             # Sensor integrations
+```
+
+## MVP Pattern
+
+Muun implements Model-View-Presenter with clear separation:
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│    Model    │◄────│  Presenter  │─────►│    View     │
+│             │      │             │      │             │
+│ Domain      │      │ Business    │      │ UI          │
+│ Models      │      │ Logic       │      │ Components  │
+└─────────────┘      └─────────────┘      └─────────────┘
+        ▲                    ▲                    ▲
+        │                    │                    │
+   Domain Layer         Presentation          Activities/
+                          Layer              Fragments
+```
+
+### Model
+
+- Domain models from the domain layer
+- Presentation models that adapt domain models for UI
+- No business logic
+
+### View
+
+- Activities and Fragments
+- Implements view interfaces
+- Displays data
+- Captures user input
+- No business logic
+
+### Presenter
+
+- Coordinates between view and model
+- Handles user interactions
+- Calls domain actions
+- Manages view state
+- No Android UI code
+
+## Base Classes
+
+### BaseActivity
+
+All activities extend `BaseActivity`, which provides common functionality:
+
+```java
+public abstract class BaseActivity<PresenterT extends Presenter> 
+        extends ExtensibleActivity 
+        implements BaseView {
+
+    private ViewBinding _binding;
+    
+    @Inject
+    @NotNull
+    protected PresenterT presenter;
+
+    @Inject
+    protected ApplicationLockExtension applicationLockExtension;
+
+    @Inject
+    ExternalResultExtension externalResultExtension;
+
+    @Inject
+    PermissionManagerExtension permissionManagerExtension;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        
+        // Dependency injection
+        injectPresenter();
+        
+        // State restoration
+        Icepick.restoreInstanceState(this, savedInstanceState);
+        
+        // Setup presenter
+        presenter.setUp(getArgumentsBundle());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        presenter.onResume();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        presenter.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        presenter.tearDown();
+        super.onDestroy();
+    }
+}
+```
+
+Example from: `presentation/ui/base/BaseActivity.java:68`
+
+<Info>
+`BaseActivity` handles common concerns like dependency injection, lifecycle management, and state restoration, allowing feature activities to focus on their specific functionality.
+</Info>
+
+### BasePresenter
+
+All presenters extend `BasePresenter`:
+
+```java
+public abstract class BasePresenter<ViewT extends BaseView> {
+    protected ViewT view;
+    protected CompositeSubscription compositeSubscription;
+    
+    public void setUp(@NotNull Bundle arguments) {
+        compositeSubscription = new CompositeSubscription();
+    }
+    
+    public void setView(@NotNull ViewT view) {
+        this.view = view;
+    }
+    
+    public void onResume() {
+        // Override in subclasses
+    }
+    
+    public void onPause() {
+        // Override in subclasses
+    }
+    
+    public void tearDown() {
+        if (compositeSubscription != null) {
+            compositeSubscription.unsubscribe();
+        }
+    }
+    
+    protected void subscribeTo(Observable<?> observable, Observer<?> observer) {
+        compositeSubscription.add(
+            observable.subscribe(observer)
+        );
+    }
+}
+```
+
+<Tip>
+The `compositeSubscription` automatically unsubscribes from all RxJava streams when the presenter is torn down, preventing memory leaks.
+</Tip>
+
+### BaseView Interface
+
+```java
+public interface BaseView {
+    void showError(UserFacingError error);
+    void showLoading();
+    void hideLoading();
+    void finishActivity();
+}
+```
+
+## Activity Extensions
+
+Muun uses a novel extension pattern to add cross-cutting functionality to activities:
+
+```
+activity/extension/
+├── ApplicationLockExtension     # App lock/unlock
+├── PermissionManagerExtension   # Runtime permissions
+├── ExternalResultExtension      # Activity results
+├── AlertDialogExtension         # Dialogs
+├── SnackBarExtension            # Snackbars
+├── ScreenshotBlockExtension     # Screenshot prevention
+├── NfcReaderModeExtension       # NFC sessions
+└── ShakeToDebugExtension        # Debug tools
+```
+
+### Extension Example: ApplicationLockExtension
+
+```java
+public class ApplicationLockExtension {
+    private final ApplicationLockManager lockManager;
+    
+    @Inject
+    public ApplicationLockExtension(ApplicationLockManager lockManager) {
+        this.lockManager = lockManager;
+    }
+    
+    public void onResume(Activity activity) {
+        if (lockManager.shouldLock()) {
+            showLockScreen(activity);
+        }
+    }
+    
+    private void showLockScreen(Activity activity) {
+        Intent intent = new Intent(activity, PinActivity.class);
+        activity.startActivity(intent);
+    }
+}
+```
+
+<Note>
+Extensions are injected via Dagger and automatically available in all activities that extend `BaseActivity`.
+</Note>
+
+## Dependency Injection
+
+### Application Component
+
+```kotlin
+@Singleton
+@Component(modules = [
+    ApplicationModule::class,
+    DataModule::class,
+    DomainModule::class,
+    BiometricsModule::class,
+    StartupModule::class
+])
+interface ApplicationComponent {
+    fun inject(application: ApolloApplication)
+    
+    // Expose for activity components
+    fun userRepository(): UserRepository
+    fun operationActions(): OperationActions
+    // ... more dependencies
+}
+```
+
+Example from: `presentation/app/di/ApplicationComponent.kt`
+
+### Activity Component
+
+Each activity can have its own component:
+
+```kotlin
+@ActivityScope
+@Component(
+    dependencies = [ApplicationComponent::class],
+    modules = [HomeModule::class]
+)
+interface HomeComponent {
+    fun inject(activity: HomeActivity)
+}
+```
+
+### Injection in Activities
+
+```java
+public class HomeActivity extends BaseActivity<HomePresenter> {
+    
+    @Override
+    protected void injectPresenter() {
+        DaggerHomeComponent.builder()
+            .applicationComponent(getApplicationComponent())
+            .build()
+            .inject(this);
+    }
+}
+```
+
+## Feature Structure Example: Home Screen
+
+### HomeActivity
+
+```java
+public class HomeActivity extends BaseActivity<HomePresenter> 
+        implements HomeView {
+    
+    private HomeBinding binding;
+    
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        binding = HomeBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
+        
+        setupViews();
+    }
+    
+    private void setupViews() {
+        binding.sendButton.setOnClickListener(v -> 
+            presenter.onSendClicked()
+        );
+        
+        binding.receiveButton.setOnClickListener(v -> 
+            presenter.onReceiveClicked()
+        );
+    }
+    
+    @Override
+    public void showBalance(MonetaryAmount balance) {
+        binding.balanceText.setText(
+            balance.toFriendlyString()
+        );
+    }
+    
+    @Override
+    public void showOperations(List<UiOperation> operations) {
+        adapter.setOperations(operations);
+    }
+    
+    @Override
+    public void navigateToSend() {
+        Navigator.navigateToSend(this);
+    }
+}
+```
+
+### HomePresenter
+
+```java
+public class HomePresenter extends BasePresenter<HomeView> {
+    private final OperationActions operationActions;
+    private final BalanceSelector balanceSelector;
+    private final UserRepository userRepository;
+    
+    @Inject
+    public HomePresenter(OperationActions operationActions,
+                          BalanceSelector balanceSelector,
+                          UserRepository userRepository) {
+        this.operationActions = operationActions;
+        this.balanceSelector = balanceSelector;
+        this.userRepository = userRepository;
+    }
+    
+    @Override
+    public void setUp(@NotNull Bundle arguments) {
+        super.setUp(arguments);
+        
+        // Watch balance changes
+        subscribeTo(
+            balanceSelector.watchBalance(),
+            balance -> view.showBalance(balance)
+        );
+        
+        // Watch operations
+        subscribeTo(
+            operationActions.watchOperations(),
+            operations -> view.showOperations(
+                toUiOperations(operations)
+            )
+        );
+    }
+    
+    public void onSendClicked() {
+        userRepository.getUser()
+            .subscribe(user -> {
+                if (user.hasPassword) {
+                    view.navigateToSend();
+                } else {
+                    view.showError(new AuthenticationRequiredError());
+                }
+            });
+    }
+    
+    public void onReceiveClicked() {
+        view.navigateToReceive();
+    }
+    
+    private List<UiOperation> toUiOperations(List<Operation> operations) {
+        return operations.stream()
+            .map(UiOperation::fromOperation)
+            .collect(Collectors.toList());
+    }
+}
+```
+
+### HomeView Interface
+
+```java
+public interface HomeView extends BaseView {
+    void showBalance(MonetaryAmount balance);
+    void showOperations(List<UiOperation> operations);
+    void navigateToSend();
+    void navigateToReceive();
+}
+```
+
+<Tip>
+**Presentation Logic Flow**:
+1. User clicks button → Activity calls presenter method
+2. Presenter executes domain action
+3. Domain action returns Observable with result
+4. Presenter subscribes and updates view
+5. View displays updated data
+</Tip>
+
+## Presentation Models
+
+Presentation models adapt domain models for UI display:
+
+### UiOperation
+
+```kotlin
+data class UiOperation(
+    val id: Long,
+    val description: String,
+    val amount: String,
+    val formattedAmount: CharSequence,
+    val date: String,
+    val status: OperationStatus,
+    val direction: Direction,
+    val iconRes: Int,
+    val statusColor: Int
+) {
+    companion object {
+        fun fromOperation(operation: Operation): UiOperation {
+            return UiOperation(
+                id = operation.id,
+                description = formatDescription(operation),
+                amount = operation.amount.toFriendlyString(),
+                formattedAmount = formatWithColor(operation),
+                date = formatDate(operation.createdAt),
+                status = operation.status,
+                direction = operation.direction,
+                iconRes = getIcon(operation),
+                statusColor = getStatusColor(operation)
+            )
+        }
+    }
+}
+```
+
+Example from: `presentation/model/UiOperation.kt`
+
+<Info>
+Presentation models handle formatting, color selection, and icon selection, keeping this display logic out of domain models and activities.
+</Info>
+
+## Navigation
+
+The `Navigator` class centralizes navigation logic:
+
+```java
+public class Navigator {
+    
+    public static void navigateToSend(Activity context) {
+        Intent intent = new Intent(context, SendActivity.class);
+        context.startActivity(intent);
+    }
+    
+    public static void navigateToReceive(Activity context) {
+        Intent intent = new Intent(context, ReceiveActivity.class);
+        context.startActivity(intent);
+    }
+    
+    public static void navigateToOperationDetail(
+            Activity context, 
+            long operationId
+    ) {
+        Intent intent = new Intent(context, OperationDetailActivity.class);
+        intent.putExtra(EXTRA_OPERATION_ID, operationId);
+        context.startActivity(intent);
+    }
+    
+    public static void navigateToHome(
+            Activity context, 
+            boolean clearStack
+    ) {
+        Intent intent = new Intent(context, HomeActivity.class);
+        if (clearStack) {
+            intent.setFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK | 
+                Intent.FLAG_ACTIVITY_CLEAR_TASK
+            );
+        }
+        context.startActivity(intent);
+    }
+}
+```
+
+Example from: `presentation/app/Navigator.java`
+
+## View Components
+
+### Custom Views
+
+Muun uses custom views for reusable UI components:
+
+```
+ui/view/
+├── MuunButton              # Styled button
+├── MuunTextInput           # Text input with validation
+├── MuunAmountInput         # Bitcoin amount input
+├── MuunHeader              # Standard header
+└── OperationListItem       # Operation list item
+```
+
+### RecyclerView Adapters
+
+```java
+public class OperationsAdapter 
+        extends RecyclerView.Adapter<OperationViewHolder> {
+    
+    private List<UiOperation> operations = new ArrayList<>();
+    private OnOperationClickListener listener;
+    
+    public void setOperations(List<UiOperation> operations) {
+        this.operations = operations;
+        notifyDataSetChanged();
+    }
+    
+    @Override
+    public OperationViewHolder onCreateViewHolder(
+            ViewGroup parent, 
+            int viewType
+    ) {
+        View view = LayoutInflater.from(parent.getContext())
+            .inflate(R.layout.item_operation, parent, false);
+        return new OperationViewHolder(view);
+    }
+    
+    @Override
+    public void onBindViewHolder(OperationViewHolder holder, int position) {
+        UiOperation operation = operations.get(position);
+        holder.bind(operation, listener);
+    }
+    
+    public interface OnOperationClickListener {
+        void onOperationClicked(UiOperation operation);
+    }
+}
+```
+
+## State Management
+
+### Icepick for State Preservation
+
+Muun uses Icepick to save/restore activity state:
+
+```java
+public class SendActivity extends BaseActivity<SendPresenter> {
+    
+    @State
+    String address;
+    
+    @State
+    MonetaryAmount amount;
+    
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // Icepick automatically restores @State fields
+        Icepick.restoreInstanceState(this, savedInstanceState);
+    }
+    
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        // Icepick automatically saves @State fields
+        Icepick.saveInstanceState(this, outState);
+    }
+}
+```
+
+### RxJava Subscription Management
+
+Presenters manage subscriptions to prevent leaks:
+
+```java
+public void subscribeToBalance() {
+    subscribeTo(
+        balanceSelector.watchBalance(),
+        new Subscriber<MonetaryAmount>() {
+            @Override
+            public void onNext(MonetaryAmount balance) {
+                view.showBalance(balance);
+            }
+            
+            @Override
+            public void onError(Throwable error) {
+                view.showError(handleError(error));
+            }
+            
+            @Override
+            public void onCompleted() {
+                // Stream completed
+            }
+        }
+    );
+}
+```
+
+<Warning>
+Always use `subscribeTo()` instead of direct `.subscribe()` to ensure subscriptions are properly cleaned up when the presenter is destroyed.
+</Warning>
+
+## Error Handling
+
+### Displaying Errors to Users
+
+```java
+public void handleError(Throwable error) {
+    if (error instanceof UserFacingError) {
+        view.showError((UserFacingError) error);
+    } else if (error instanceof NetworkError) {
+        view.showError(new NetworkConnectionError());
+    } else {
+        view.showError(new UnexpectedError());
+        Timber.e(error, "Unexpected error");
+    }
+}
+```
+
+### Error Dialog
+
+```java
+public void showError(UserFacingError error) {
+    new MuunDialog.Builder()
+        .title(R.string.error_title)
+        .message(error.getUserFacingMessage())
+        .positiveButton(R.string.ok)
+        .show(this);
+}
+```
+
+## Biometric Authentication
+
+The biometrics package handles fingerprint/face authentication:
+
+```kotlin
+class BiometricsControllerImpl @Inject constructor(
+    private val applicationLockManager: ApplicationLockManager
+) : BiometricsController {
+    
+    override fun authenticate(
+        activity: FragmentActivity,
+        callback: BiometricCallback
+    ) {
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock Muun")
+            .setNegativeButtonText("Use PIN")
+            .build()
+        
+        val biometricPrompt = BiometricPrompt(
+            activity,
+            ContextCompat.getMainExecutor(activity),
+            authenticationCallback(callback)
+        )
+        
+        biometricPrompt.authenticate(promptInfo)
+    }
+}
+```
+
+Example from: `presentation/biometrics/BiometricsControllerImpl.kt`
+
+## Export Functionality
+
+The export package handles data export (Emergency Kit PDF):
+
+```kotlin
+class PdfExporter @Inject constructor(
+    private val fileManager: FileManager,
+    private val context: Context
+) {
+    
+    fun exportEmergencyKit(
+        emergencyKit: EmergencyKit,
+        outputFile: File
+    ): Single<File> {
+        return Single.fromCallable {
+            val document = Document()
+            PdfWriter.getInstance(document, FileOutputStream(outputFile))
+            document.open()
+            
+            // Add emergency kit content
+            addHeader(document)
+            addRecoveryCode(document, emergencyKit.code)
+            addInstructions(document)
+            
+            document.close()
+            outputFile
+        }
+    }
+}
+```
+
+Example from: `presentation/export/PdfExporter.kt`
+
+## Testing Presentation Layer
+
+### Presenter Tests
+
+```java
+public class HomePresenterTest {
+    @Mock
+    private HomeView view;
+    
+    @Mock
+    private OperationActions operationActions;
+    
+    @Mock
+    private BalanceSelector balanceSelector;
+    
+    private HomePresenter presenter;
+    
+    @Before
+    public void setUp() {
+        MockitoAnnotations.initMocks(this);
+        presenter = new HomePresenter(
+            operationActions,
+            balanceSelector,
+            userRepository
+        );
+        presenter.setView(view);
+    }
+    
+    @Test
+    public void setUp_loadsBalanceAndOperations() {
+        // Given
+        MonetaryAmount balance = btc(1.5);
+        when(balanceSelector.watchBalance())
+            .thenReturn(Observable.just(balance));
+        
+        // When
+        presenter.setUp(new Bundle());
+        
+        // Then
+        verify(view).showBalance(balance);
+    }
+    
+    @Test
+    public void onSendClicked_withAuthentication_navigates() {
+        // Given
+        User user = createUserWithPassword();
+        when(userRepository.getUser())
+            .thenReturn(Observable.just(user));
+        
+        // When
+        presenter.onSendClicked();
+        
+        // Then
+        verify(view).navigateToSend();
+    }
+}
+```
+
+## Best Practices
+
+<Tip>
+**Presentation Layer Guidelines**
+
+1. **No Business Logic**: Business decisions happen in domain layer
+2. **View Interfaces**: Activities implement view interfaces
+3. **Presenter Testing**: Test presenters with mocked views
+4. **Subscription Management**: Use `subscribeTo()` for RxJava
+5. **State Preservation**: Use Icepick for activity state
+6. **Navigation Centralization**: Use Navigator class
+7. **Error Handling**: Convert all errors to user-facing messages
+</Tip>
+
+## Common Pitfalls
+
+<Warning>
+**Anti-Patterns to Avoid**
+
+- ❌ Business logic in Activities or Presenters
+- ❌ Direct data layer access from presentation
+- ❌ Unmanaged RxJava subscriptions
+- ❌ Not implementing view interfaces
+- ❌ Tight coupling between Activity and Presenter
+- ❌ Hardcoded navigation
+</Warning>
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Domain Layer" icon="code" href="/architecture/domain-layer">
+    Learn how presenters use domain actions
+  </Card>
+  <Card title="MVP Pattern" icon="layer-group" href="/architecture/clean-architecture">
+    Understand MVP in clean architecture
+  </Card>
+</CardGroup>

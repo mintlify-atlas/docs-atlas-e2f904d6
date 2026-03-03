@@ -1,0 +1,510 @@
+---
+title: "Submarine Swap Functionality"
+description: "Technical deep dive into Muun's submarine swap protocol for trustless conversion between Bitcoin on-chain and Lightning Network"
+icon: "arrow-right-arrow-left"
+---
+
+## Overview
+
+**Submarine swaps** are the core technology enabling Muun to provide Lightning Network functionality without running Lightning channels. They allow **trustless, atomic swaps** between on-chain Bitcoin and Lightning Network payments using Hash Time-Locked Contracts (HTLCs).
+
+<Note>
+The term "submarine" refers to the swap going "underwater" from the visible blockchain to the Lightning Network layer, or vice versa.
+</Note>
+
+## How Submarine Swaps Work
+
+### The Problem
+
+Traditional Lightning wallets require:
+- Opening and managing payment channels
+- Maintaining inbound liquidity to receive
+- Keeping the node online for channel monitoring
+- Handling force closures and channel disputes
+
+Muun eliminates these requirements using submarine swaps.
+
+### The Solution
+
+A submarine swap uses cryptographic HTLCs to trustlessly exchange:
+- **Forward swap**: On-chain Bitcoin → Lightning payment
+- **Reverse swap**: Lightning payment → On-chain Bitcoin
+
+## HTLC Fundamentals
+
+### Hash Time-Locked Contract
+
+An HTLC is a Bitcoin script that locks funds until:
+
+1. **Hash condition**: The spender provides the preimage of a hash, OR
+2. **Time condition**: A timeout expires and the original sender reclaims funds
+
+This creates atomic swaps: either both parties get paid, or both get refunded.
+
+### Payment Hash
+
+The critical component linking Lightning and on-chain:
+
+```go
+// From submarineSwap.go
+type SubmarineSwapFundingOutput interface {
+    ServerPaymentHashInHex() string  // SHA256 hash
+    ServerPublicKeyInHex() string
+    UserLockTime() int64
+}
+```
+
+- **Sender** creates a random secret (preimage)
+- **Hash** of the secret is shared publicly
+- **Receiver** must reveal preimage to claim funds
+- Revealing preimage allows both parties to collect
+
+## Forward Submarine Swap
+
+### Sending to Lightning
+
+When a user pays a Lightning invoice:
+
+**Step 1: Parse Invoice**
+```go
+// Invoice contains:
+// - Payment hash (from recipient's preimage)
+// - Amount in satoshis
+// - Destination node
+// - Expiry time
+```
+
+**Step 2: Create On-chain HTLC**
+
+User locks funds in an HTLC with:
+- Payment hash from the invoice
+- Muun's swap server as the recipient
+- Timeout for refund (if Lightning payment fails)
+
+**Step 3: Swap Server Pays Lightning**
+
+Muun's swap server:
+- Receives the on-chain HTLC
+- Pays the Lightning invoice
+- Receives the preimage from the Lightning recipient
+
+**Step 4: Server Collects On-chain**
+
+Swap server uses the preimage to claim the on-chain HTLC funds.
+
+### Submarine Swap V1 Implementation
+
+```go
+// From submarineSwapV1.go
+type coinSubmarineSwapV1 struct {
+    Network         *chaincfg.Params
+    OutPoint        wire.OutPoint
+    KeyPath         string
+    Amount          btcutil.Amount
+    RefundAddress   string          // Where to refund if swap fails
+    PaymentHash256  []byte          // From Lightning invoice
+    ServerPublicKey []byte          // Swap server's key
+    LockTime        int64           // Timeout for refund
+}
+```
+
+**V1 Characteristics:**
+- Uses P2SH-wrapped P2WSH (non-native SegWit)
+- User specifies refund address
+- Time-based locktime for refunds
+- Simple witness script structure
+
+Source: `libwallet/submarineSwapV1.go:13-22`
+
+### Submarine Swap V2 Implementation
+
+```go
+// From submarineSwapV2.go
+type coinSubmarineSwapV2 struct {
+    Network             *chaincfg.Params
+    OutPoint            wire.OutPoint
+    Amount              btcutil.Amount
+    KeyPath             string
+    PaymentHash256      []byte
+    UserPublicKey       []byte      // User's key for this swap
+    MuunPublicKey       []byte      // Muun's multisig key
+    ServerPublicKey     []byte      // Swap server's key
+    BlocksForExpiration int64       // Block-based timeout
+    ServerSignature     []byte      // Pre-signed by server
+}
+```
+
+**V2 Improvements:**
+- Native SegWit (P2WSH) for lower fees
+- Integrates with Muun's 2-of-2 multisig architecture
+- Block height-based expiration (more reliable)
+- Server provides signature upfront (non-interactive)
+
+Source: `libwallet/submarineSwapV2.go:13-24`
+
+### Signing Process
+
+```go
+// From submarineSwapV2.go:26
+func (c *coinSubmarineSwapV2) SignInput(index int, tx *wire.MsgTx, 
+    userKey *HDPrivateKey, _ *HDPublicKey) error {
+    
+    if len(c.ServerSignature) == 0 {
+        return errors.New("swap server must provide signature")
+    }
+    
+    witnessScript, err := swaps.CreateWitnessScriptSubmarineSwapV2(
+        c.PaymentHash256,
+        c.UserPublicKey,
+        c.MuunPublicKey,
+        c.ServerPublicKey,
+        c.BlocksForExpiration)
+    
+    // User signs
+    sig, err := signNativeSegwitInputV0(index, tx, userKey, 
+        witnessScript, c.Amount)
+    
+    // Construct witness with both signatures
+    txInput.Witness = wire.TxWitness{
+        sig,                // User's signature
+        c.ServerSignature,  // Server's signature
+        witnessScript,      // HTLC script
+    }
+}
+```
+
+<Warning>
+Submarine swap outputs **cannot be fully signed** by users alone. The swap server must cooperate, or users must wait for the timeout to reclaim funds via refund path.
+</Warning>
+
+## Reverse Submarine Swap
+
+### Receiving Lightning Payments
+
+When a user receives a Lightning payment:
+
+**Step 1: Generate Invoice**
+
+```go
+// From incoming_swap.go
+type IncomingSwap struct {
+    Htlc             *IncomingSwapHtlc
+    SphinxPacket     []byte          // Onion routing data
+    PaymentHash      []byte          // Hash of preimage
+    PaymentAmountSat int64           // Expected amount
+    CollectSat       int64           // Amount user receives
+}
+
+type IncomingSwapHtlc struct {
+    HtlcTx              []byte       // On-chain HTLC transaction
+    ExpirationHeight    int64        // Timeout block height
+    SwapServerPublicKey []byte       // Server's refund key
+}
+```
+
+**Step 2: User Creates Lightning Invoice**
+
+App generates:
+- Random preimage (kept secret)
+- Payment hash (preimage hashed)
+- BOLT-11 invoice with payment hash
+
+**Step 3: Payer Sends Lightning Payment**
+
+Lightning sender:
+- Pays invoice through Lightning network
+- Funds reach Muun's swap server via HTLC
+- Server doesn't know the preimage yet
+
+**Step 4: Server Creates On-chain HTLC**
+
+Swap server:
+- Creates on-chain transaction with HTLC output
+- Uses same payment hash from the invoice
+- Broadcasts HTLC transaction
+
+**Step 5: User Fulfills Swap**
+
+User collects funds by:
+- Revealing the preimage
+- Signing with their key
+- Muun co-signs
+- Broadcasting fulfillment transaction
+
+Once the preimage is public, the swap server can claim the Lightning payment.
+
+### Incoming Swap HTLC Script
+
+```go
+// From incoming_swap.go:478
+func createHtlcScript(userPublicKey, muunPublicKey, swapServerPublicKey []byte,
+    expiry int64, paymentHash []byte) ([]byte, error) {
+    
+    sb := txscript.NewScriptBuilder()
+    
+    // Path 1: Muun signature required
+    sb.AddData(muunPublicKey)
+    sb.AddOp(txscript.OP_CHECKSIG)
+    sb.AddOp(txscript.OP_NOTIF)
+    
+        // If Muun didn't sign, allow swap server refund after timeout
+        sb.AddOp(txscript.OP_DUP)
+        sb.AddOp(txscript.OP_HASH160)
+        sb.AddData(btcutil.Hash160(swapServerPublicKey))
+        sb.AddOp(txscript.OP_EQUALVERIFY)
+        sb.AddOp(txscript.OP_CHECKSIGVERIFY)
+        sb.AddInt64(expiry)
+        sb.AddOp(txscript.OP_CHECKLOCKTIMEVERIFY)
+        
+    sb.AddOp(txscript.OP_ELSE)
+    
+        // Path 2: User + Muun sign with preimage
+        sb.AddData(userPublicKey)
+        sb.AddOp(txscript.OP_CHECKSIGVERIFY)
+        sb.AddOp(txscript.OP_SIZE)
+        sb.AddInt64(32)
+        sb.AddOp(txscript.OP_EQUALVERIFY)
+        sb.AddOp(txscript.OP_HASH160)
+        sb.AddData(ripemd160(paymentHash))
+        sb.AddOp(txscript.OP_EQUAL)
+        
+    sb.AddOp(txscript.OP_ENDIF)
+    return sb.Script()
+}
+```
+
+**Script Logic:**
+
+1. **Happy Path**: Muun + User sign with preimage → User gets funds
+2. **Refund Path**: Server signs after timeout → Server refunds Lightning payment
+
+This ensures:
+- User must sign (maintains 2-of-2 security)
+- Preimage required (proves Lightning payment)
+- Server can refund if user abandons swap
+
+## Verification and Security
+
+### Swap Validation
+
+Before accepting a submarine swap:
+
+```go
+// From submarineSwap.go:41
+func ValidateSubmarineSwap(rawInvoice string, userPublicKey *HDPublicKey,
+    muunPublicKey *HDPublicKey, swap SubmarineSwap,
+    originalExpirationInBlocks int64, network *Network) error
+```
+
+Validation checks:
+- Invoice format is valid BOLT-11
+- Payment hash matches HTLC
+- Amount is correct
+- Keys are properly derived
+- Expiration is reasonable
+- Server signature is valid (v2)
+
+### Incoming Swap Verification
+
+```go
+// From incoming_swap.go:62
+func (s *IncomingSwap) VerifyFulfillable(userKey *HDPrivateKey,
+    net *Network) error {
+    
+    // Find stored invoice data
+    invoice, err := s.getInvoice()
+    
+    // Verify amount matches
+    if invoice.AmountSat != 0 && invoice.AmountSat > s.PaymentAmountSat {
+        return fmt.Errorf("payment amount does not match")
+    }
+    
+    // Validate Sphinx onion routing packet
+    err = sphinx.Validate(
+        s.SphinxPacket,
+        paymentHash,
+        invoice.PaymentSecret,
+        nodeKey,
+        lnwire.MilliSatoshi(s.PaymentAmountSat*1000),
+        net.network,
+    )
+}
+```
+
+**Security Properties:**
+
+<Tip>
+- **Trustless**: No need to trust Muun's swap server
+- **Atomic**: Either both parties get paid, or both get refunded
+- **Non-custodial**: User maintains control via their key
+- **Time-bounded**: Timeouts prevent indefinite fund locking
+</Tip>
+
+### Sphinx Packet Validation
+
+The Sphinx packet proves the payment came through Lightning:
+
+```go
+// From incoming_swap.go:350
+err = sphinx.Validate(
+    c.Sphinx,
+    c.PaymentHash256,
+    secrets.PaymentSecret,
+    nodeKey,
+    uint32(c.ExpirationHeight),
+    expectedAmount,
+    c.Network,
+)
+```
+
+Prevents attacks where someone sends on-chain funds directly, bypassing Lightning routing.
+
+## Fulfillment Process
+
+### Fulfillment Data
+
+```go
+// From incoming_swap.go:36
+type IncomingSwapFulfillmentData struct {
+    FulfillmentTx      []byte  // Transaction to sign
+    MuunSignature      []byte  // Muun's signature
+    OutputVersion      int     // Address version
+    OutputPath         string  // Derivation path
+    ConfirmationTarget int64   // Fee rate validation
+}
+```
+
+### Fulfillment Result
+
+```go
+// From incoming_swap.go:47
+type IncomingSwapFulfillmentResult struct {
+    FulfillmentTx []byte    // Fully signed transaction
+    Preimage      []byte    // Reveals to Lightning sender
+}
+```
+
+When user fulfills:
+
+1. Muun provides partially signed transaction
+2. User validates the transaction
+3. User signs with their key
+4. User broadcasts fulfillment transaction
+5. Preimage becomes public on-chain
+6. Swap server claims Lightning payment using preimage
+
+Source: `libwallet/incoming_swap.go:117-181`
+
+## Edge Cases and Recovery
+
+### Abandoned Swaps
+
+If user doesn't collect an incoming swap:
+
+```go
+// From incoming_swap.go:183
+func (s *IncomingSwap) FulfillFullDebt() (*IncomingSwapFulfillmentResult, error) {
+    // Reveals preimage without transaction
+    // Allows server to reclaim Lightning payment
+    return &IncomingSwapFulfillmentResult{
+        FulfillmentTx: nil,
+        Preimage:      secrets.Preimage,
+    }, nil
+}
+```
+
+After timeout, swap server can refund the Lightning payment.
+
+### Failed Lightning Payments
+
+If the Lightning payment fails:
+- User's on-chain HTLC times out
+- User can reclaim funds to refund address (v1)
+- No loss for either party
+
+### Lost Invoice Data
+
+Special handling for lost preimage:
+
+```go
+// From incoming_swap.go:238
+if len(c.Preimage) > 0 {
+    // Houston provides preimage for collaborative recovery
+    // Allows spending otherwise unspendable inputs
+    secrets = &walletdb.Invoice{
+        Preimage: c.Preimage,
+        KeyPath:  invoiceBaseKeyPath,
+    }
+}
+```
+
+If user logged out and forgot invoice secrets, Muun can provide the preimage (if previously revealed) to allow spending.
+
+## Performance Considerations
+
+### On-chain Footprint
+
+<Warning>
+Every Lightning payment via submarine swaps creates an on-chain transaction. During high fee periods, this can be expensive.
+</Warning>
+
+Muun optimizes by:
+- Using native SegWit (v2) for lower fees
+- Batching when possible
+- Subsidizing fees during fee spikes
+- Warning users about high fees
+
+### Swap Fees
+
+Typical costs:
+- **On-chain mining fee**: Paid to Bitcoin miners
+- **Lightning routing fee**: Paid to Lightning routing nodes
+- **Swap service fee**: Muun's operational cost
+
+Total can be higher than native Lightning or native on-chain.
+
+### Timing
+
+- **Forward swap**: Near-instant Lightning payment after on-chain confirmation
+- **Reverse swap**: Instant Lightning receipt, on-chain confirms in ~10 minutes
+- **Refunds**: Available after timeout (typically 24-48 hours)
+
+## Address Version Compatibility
+
+```go
+// From submarineSwap.go:60
+func createSwapFundingOutput(output SubmarineSwapFundingOutput) 
+    swaps.SubmarineSwapFundingOutput {
+    
+    switch out.ScriptVersion {
+    case AddressVersionSwapsV1:
+        out.UserRefundAddress = addresses.New(
+            output.UserRefundAddress().Version(),
+            output.UserRefundAddress().DerivationPath(),
+            output.UserRefundAddress().Address(),
+        )
+    case AddressVersionSwapsV2:
+        out.ExpirationInBlocks = output.ExpirationInBlocks()
+        out.UserPublicKey = &output.UserPublicKey().key
+        out.MuunPublicKey = &output.MuunPublicKey().key
+    }
+}
+```
+
+Swaps integrate with:
+- V1: Simple refund address
+- V2+: Full multisig integration
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Lightning Network" icon="bolt" href="/features/lightning-network">
+    User-facing Lightning functionality built on swaps
+  </Card>
+  <Card title="Multisig" icon="key" href="/features/multisig">
+    How swaps integrate with 2-of-2 multisig
+  </Card>
+  <Card title="Recovery" icon="life-ring" href="/features/recovery">
+    Recovering stuck submarine swap funds
+  </Card>
+</CardGroup>

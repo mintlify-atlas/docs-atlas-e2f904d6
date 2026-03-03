@@ -1,0 +1,163 @@
+---
+title: Key management
+description: Understanding Muun's hierarchical deterministic key management system
+---
+
+## Overview
+
+Muun Wallet implements a robust hierarchical deterministic (HD) key management system based on BIP32. The wallet uses a 2-of-2 multisig architecture where keys are managed separately by the user and Muun's servers, ensuring non-custodial security.
+
+## Key architecture
+
+### Master key generation
+
+All keys in Muun are derived from a master seed using the BIP32 standard. The wallet creates two independent key hierarchies:
+
+- **User key**: Stored on the device, controlled exclusively by the user
+- **Muun key**: Stored on Muun servers, used for co-signing transactions
+
+```go libwallet/hdprivatekey.go
+func NewHDPrivateKey(seed []byte, network *Network) (*HDPrivateKey, error) {
+    key, err := hdkeychain.NewMaster(seed, network.network)
+    if err != nil {
+        return nil, err
+    }
+    return &HDPrivateKey{key: *key, Network: network, Path: "m"}, nil
+}
+```
+
+### Base derivation path
+
+Muun uses a custom base path for all key derivation:
+
+```
+m/schema:1'/recovery:1'
+```
+
+This path serves as the foundation for all subsequent key derivations. The hardened derivation (`'`) ensures that child keys cannot be used to derive parent keys, enhancing security.
+
+<Note>
+The `schema:1'` and `recovery:1'` path components use named indices for clarity and future extensibility.
+</Note>
+
+## HD key operations
+
+### Key derivation
+
+Keys can be derived using two methods:
+
+**Relative derivation** - Derive from current position:
+```go
+func (p *HDPrivateKey) DerivedAt(index uint32, change uint32) (*HDPrivateKey, error)
+```
+
+**Absolute derivation** - Derive to a specific path:
+```go
+func (p *HDPrivateKey) DeriveTo(path string) (*HDPrivateKey, error)
+```
+
+### Public key extraction
+
+Every private key can produce its corresponding public key without exposing the private key:
+
+```go libwallet/hdprivatekey.go
+func (p *HDPrivateKey) PublicKey() *HDPublicKey {
+    key, err := p.key.Neuter()
+    if err != nil {
+        panic("original key was invalid")
+    }
+    return &HDPublicKey{key: *key, Network: p.Network, Path: p.Path}
+}
+```
+
+## Key encryption
+
+Muun implements multiple layers of encryption to protect private keys:
+
+### Device-level encryption
+
+- Keys stored on the device are encrypted using Android's keystore system
+- Encryption keys are hardware-backed when available (TEE/Secure Enclave)
+- Additional encryption layer using user-provided credentials
+
+### Recovery key encryption
+
+Keys included in the emergency kit are encrypted using:
+- **Password-based encryption**: Uses the recovery code as passphrase
+- **ECDH encryption**: Challenge keys encrypt the recovery data
+- **Scrypt key derivation**: Protects against brute-force attacks
+
+<Warning>
+Never store unencrypted private keys. Always use the provided encryption mechanisms or Android's secure storage.
+</Warning>
+
+## Key backup and recovery
+
+### Emergency kit
+
+The emergency kit contains encrypted versions of:
+- User's base private key and chain code
+- Recovery code information
+- Output descriptors for all wallet addresses
+
+### Recovery code
+
+The recovery code is a user-memorable secret that:
+- Derives a challenge private key using scrypt
+- Can decrypt the emergency kit
+- Enables wallet recovery without server assistance
+
+## Security considerations
+
+### Key isolation
+
+<Warning>
+**Critical**: The user key and Muun key must never be stored in the same location. This ensures:
+- No single point of failure
+- True non-custodial security
+- Protection against server compromise
+</Warning>
+
+### Derivation path validation
+
+Always validate derivation paths before use:
+- Ensure paths follow the expected schema
+- Verify hardened derivation where required
+- Check for path injection attempts
+
+### Memory management
+
+```go
+// Clear sensitive data from memory after use
+defer func() {
+    // Zero out sensitive byte slices
+    for i := range seed {
+        seed[i] = 0
+    }
+}()
+```
+
+## Best practices
+
+1. **Never reuse keys**: Always derive new keys for each address
+2. **Use hardware backing**: Leverage TEE/Secure Enclave when available
+3. **Implement key rotation**: Support for updating challenge keys
+4. **Audit key access**: Log all key operations for security monitoring
+5. **Test recovery paths**: Regularly verify that key recovery works
+
+## Related documentation
+
+<CardGroup cols={2}>
+  <Card title="HD Keys API" icon="key" href="/api/hdkeys">
+    Detailed API reference for HD key operations
+  </Card>
+  <Card title="Challenge Keys" icon="shield-halved" href="/security/challenge-keys">
+    Challenge key system for recovery
+  </Card>
+  <Card title="Encryption API" icon="lock" href="/api/encryption">
+    Encryption and decryption APIs
+  </Card>
+  <Card title="Emergency Kit" icon="kit-medical" href="/features/emergency-kit">
+    Backup and recovery system
+  </Card>
+</CardGroup>

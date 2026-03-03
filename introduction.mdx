@@ -1,0 +1,129 @@
+---
+title: Muun Wallet
+description: A non-custodial 2-of-2 multisig Bitcoin and Lightning wallet for Android
+---
+
+<img
+  className="block dark:hidden"
+  src="https://muun.com/images/github-banner-v2.png"
+  alt="Muun Wallet"
+/>
+<img
+  className="hidden dark:block"
+  src="https://muun.com/images/github-banner-v2.png"
+  alt="Muun Wallet"
+/>
+
+## About Muun Wallet
+
+Muun is a non-custodial 2-of-2 multisig wallet with a special focus on security and ease of use. This is the source code repository for Muun's Android wallet, designed to give users full control over their Bitcoin and Lightning transactions.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick Start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running with Muun Wallet development in minutes
+  </Card>
+  <Card
+    title="Requirements"
+    icon="list-check"
+    href="/requirements"
+  >
+    View runtime and build requirements for the wallet
+  </Card>
+  <Card
+    title="Architecture"
+    icon="sitemap"
+    href="#architecture"
+  >
+    Understand the clean architecture pattern used in Muun
+  </Card>
+  <Card
+    title="Security"
+    icon="shield-halved"
+    href="#responsible-disclosure"
+  >
+    Learn about our security practices and responsible disclosure
+  </Card>
+</CardGroup>
+
+## Architecture
+
+Muun follows the [clean architecture](https://fernandocejas.com/2014/09/03/architecting-android-the-clean-way/) pattern with three distinct layers:
+
+<Steps>
+  <Step title="Data Layer">
+    Handles all data backends including:
+    - Database operations
+    - Operating system interactions
+    - Network communications
+    
+    All keystore and data handling happens at this layer.
+  </Step>
+  
+  <Step title="Domain Layer">
+    Contains the core business logic:
+    - Domain models
+    - Use cases (clean architecture terminology)
+    - Transaction signing decisions
+    
+    All business logic that decides when to sign transactions happens here.
+  </Step>
+  
+  <Step title="Presentation Layer">
+    Contains all UI code:
+    - Views and activities
+    - User interaction handling
+    - Depends only on the domain layer
+    
+    <Note>
+      The presentation layer never references the data layer directly, ensuring proper separation of concerns.
+    </Note>
+  </Step>
+</Steps>
+
+### Common Module
+
+There's also a pure Java **common** module with code shared across all layers. Most key handling and transaction crafting operations happen in this module.
+
+## Auditing
+
+When auditing the Muun codebase, focus on these critical areas:
+
+- **Key Operations**: Most key handling and transaction crafting operations happen in the `common` module
+- **Data Security**: All keystore and data handling happens in the `data` layer  
+- **Business Logic**: All signing decisions happen in the `domain` layer
+- **Layer Isolation**: The `presentation` layer only depends on `domain`, never `data` directly
+
+## Responsible Disclosure
+
+<Warning>
+  If you discover security vulnerabilities, please report them responsibly.
+</Warning>
+
+Send security-related bugs or vulnerabilities to: **security@muun.com**
+
+You can encrypt your email using our public PGP key:
+
+```
+Public key fingerprint: 1299 28C1 E79F E011 6DA4 C80F 8DB7 FD0F 61E6 ED76
+```
+
+## Contributions
+
+<Note>
+  Muun is currently not accepting contributions in PR form due to team size and development workflow constraints. However, feedback and suggestions for improvements are always welcome.
+</Note>
+
+While we cannot accept traditional pull requests, the team values:
+- Bug reports and issue submissions
+- Feature suggestions and feedback  
+- Security vulnerability reports
+
+External contributions have been included in the past, just not through the traditional "accept and merge" PR process.
+
+<Note>
+  Language translation contributions cannot be accepted at this time.
+</Note>

@@ -1,0 +1,188 @@
+---
+title: Changelog
+description: Release history and notable changes for Muun Wallet Android
+---
+
+All notable changes to Muun Wallet Android are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## Recent Releases
+
+<AccordionGroup>
+  <Accordion title="Version 55.6 - February 18, 2026">
+    ### Fixed
+    - Crash due to IntentSanitizer misconfiguration in Android > 10
+    - Errors in NewOperationActivity onCreate crashing the app
+  </Accordion>
+
+  <Accordion title="Version 55.5 - February 12, 2026">
+    ### Fixed
+    - Missing method after bumping `compileSdk` crash
+    - Crashlytics obfuscating crash names
+  </Accordion>
+
+  <Accordion title="Version 55.4 - January 29, 2026">
+    ### Changed
+    - Bump `minSdk` to 21
+    - 6-digit pin for new users
+    - Replace ButterKnife with ViewBinding in various screens
+
+    ### Added
+    - Biometrics support for app unlocking
+
+    ### Fixed
+    - Input fee bug not recognizing decimal separator in Spanish
+  </Accordion>
+
+  <Accordion title="Version 55.3 - October 8, 2025">
+    ### Changed
+    - Bump `targetSDK` to 35
+    - Replace ButterKnife with ViewBinding in various screens
+    - Migrate ApolloApplication to Kotlin
+    - Migrate Dagger @Component to Kotlin
+    - Migrate Dagger @Module to Kotlin
+    - Update go version to 1.24 to support 16kb pages
+
+    ### Added
+    - 16kb page support
+  </Accordion>
+
+  <Accordion title="Version 55.2 - September 23, 2025">
+    ### Fixed
+    - Visual issues related to handling of insets in android versions without edge-to-edge support (api level < 30)
+  </Accordion>
+
+  <Accordion title="Version 55.1 - August 22, 2025">
+    ### Fixed
+    - Api < 24 crash on missing method
+    - Null context fixed on dialog
+  </Accordion>
+
+  <Accordion title="Version 55.0 - August 7, 2025">
+    ### Changed
+    - `nightMode` migrated from shared preferences
+
+    ### Added
+    - Edge to edge support
+
+    ### Fixed
+    - Reproducible builds
+    - Reproducible builds context
+    - Effective fees sync in background removed
+    - Dns resolution fix for android 15
+    - Api 19 drawable missing crash
+  </Accordion>
+
+  <Accordion title="Version 53.5 - June 27, 2025">
+    ### Fixed
+    - Error logging and reporting logic
+  </Accordion>
+
+  <Accordion title="Version 53.4 - May 29, 2025">
+    ### Changed
+    - Added multi APK support to bypass 100MB APK size limit
+  </Accordion>
+
+  <Accordion title="Version 53.3 - April 8, 2025">
+    ### Fixed
+    - Proper fix for non ascii chars in http headers
+  </Accordion>
+
+  <Accordion title="Version 53.2 - March 24, 2025">
+    ### Added
+    - Alternative transactions signing
+  </Accordion>
+
+  <Accordion title="Version 53.1 - February 21, 2025">
+    ### Added
+    - Revamped real time fees calculation
+    - Background notification processing reliability improvements
+
+    ### Fixed
+    - Non deterministic bug regarding hardened key derivation
+  </Accordion>
+</AccordionGroup>
+
+## Major Feature Releases
+
+<AccordionGroup>
+  <Accordion title="Version 52 - June 14, 2024">
+    ### Added
+    - **Wallet delete:** All users can now request wallet delete, to comply with Google Play Account Deletion Data Safety policy
+  </Accordion>
+
+  <Accordion title="Version 51 - July 28, 2023">
+    ### Added
+    - Support for requesting Push Notification Runtime Permission
+    - Option to skip to receive on-chain but required to receive LN Payments (to avoid payment failures)
+
+    ### Changed
+    - Upgraded compiledSdkVersion and targetSdkVersion to 33
+  </Accordion>
+
+  <Accordion title="Version 50 - December 8, 2022">
+    ### Added
+    - **Lightning First preference:** Users can now choose to make lightning their preferred way of receiving payments
+    - **Unified QRs:** First experimental feature - a unified QR that enables receiving both on-chain (via bitcoin address) and offchain (via ln invoice)
+
+    ### Fixed
+    - A problem with an inlined "What's this?" link in Recommended Fees screen
+    - Currency search in Select Currency screen was case-sensitive, now insensitive
+    - An issue that allowed users to submit incomplete or empty RCs using the softkeyboard
+  </Accordion>
+
+  <Accordion title="Version 49 - March 16, 2022">
+    ### Added
+    - Option to select SAT as input currency for receive and send screens' amount input
+    - Multiple route hints support in our invoices
+
+    ### Changed
+    - Upgrade gradle to 7.3.3 to support JDK17 (ARM support)
+    - Upgrade AGP to 7.0.4 for gradle 7.3 compat
+    - Upgrade SQDelight to 1.5.3 for gradle 7.3 compat (huge refactor and rework of data layer)
+    - Upgrade Kotlin to 1.6.10 for gradle 7.3 compat
+    - Upgrade Dagger to 2.40.5 for gradle 7.3 compat
+    - Make libwallet its own gradle project to work nicely with AndroidStudio
+  </Accordion>
+
+  <Accordion title="Version 47.1 - November 10, 2021">
+    ### Added
+    - **New Emergency Kit Update flow:** Users can now update their Emergency Kit to activate useful new features like Taproot
+    - **Taproot support:** Users are now fully equipped to received from and send to taproot addresses
+  </Accordion>
+
+  <Accordion title="Version 46 - June 2, 2021">
+    ### Added
+    - **LNURL withdraw support:** Users can now withdraw from services using LNURLs
+    - Enhanced Dark Mode color palette to better adapt to different devices renderings
+
+    ### Changed
+    - Enhanced crashlytics reporting: silence or avoid reporting noisy errors
+
+    ### Fixed
+    - Some problems when creating or recovering a wallet in low end devices
+    - Several visual issues
+
+    ### Removed
+    - Display of the fee for incoming TXs
+    - Autofocus feature to be compat with more devices
+  </Accordion>
+
+  <Accordion title="Version 45 - March 26, 2021">
+    ### Added
+    - **Edit Invoice amount feature:** Users can now set and edit an amount for a LN invoice. They can also set an amount to their BTC address, turning it into a Bitcoin Uri
+    - **Dark Mode User Setting:** New user setting with up to 3 options: Dark, Light, Follow System
+
+    ### Changed
+    - Migrate to use Mempool.Space Block Explorer
+    - Completely redesigned the receive screen to add advanced settings section with edit amount option, expiration time, address type picker
+
+    ### Fixed
+    - Several missing background and screen overlapping issues
+    - New operation badge animation logic in home
+    - Repository wiping/clearing logic on logout
+  </Accordion>
+</AccordionGroup>
+
+## Full Changelog
+
+For the complete changelog history, see the [CHANGELOG.md](https://github.com/muun/apollo/blob/master/android/CHANGELOG.md) file in the source repository.

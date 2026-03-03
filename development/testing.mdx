@@ -1,0 +1,426 @@
+---
+title: Testing
+description: Testing approach and guidelines for Muun Wallet development
+---
+
+Muun Wallet uses a comprehensive testing strategy that includes unit tests, integration tests, and instrumentation tests. This guide covers the testing architecture and how to run tests.
+
+## Test Architecture
+
+Muun follows the [Clean Architecture](https://fernandocejas.com/2014/09/03/architecting-android-the-clean-way/) pattern with tests organized across three layers:
+
+- **Presentation Layer** - UI tests and presenter tests
+- **Domain Layer** - Business logic and use case tests
+- **Data Layer** - Data handling, storage, and network tests
+
+## Test Types
+
+### Unit Tests
+
+Unit tests are located in `src/test/` directories and run on the JVM without Android framework dependencies.
+
+**Location:** `android/apolloui/src/test/java/io/muun/apollo/`
+
+**Base Class:** `BaseUnitTest`
+
+```kotlin
+@RunWith(MockitoJUnitRunner::class)
+abstract class BaseUnitTest {
+    companion object {
+        @BeforeClass
+        @JvmStatic
+        fun classSetUp() {
+            LoggingContext.sendToCrashlytics = false
+            Globals.INSTANCE = Mockito.mock(Globals::class.java)
+            UserFacingErrorMessages.INSTANCE = 
+                Mockito.mock(UserFacingErrorMessages::class.java)
+        }
+    }
+}
+```
+
+**Key Features:**
+
+- Uses Mockito for mocking
+- Disables Crashlytics logging
+- Mocks global dependencies
+
+### Instrumentation Tests
+
+Instrumentation tests run on Android devices or emulators and test the full application stack.
+
+**Location:** `android/apolloui/src/androidTest/java/io/muun/apollo/`
+
+**Base Class:** `BaseInstrumentationTest`
+
+```kotlin
+open class BaseInstrumentationTest : WithMuunInstrumentationHelpers {
+    @JvmField
+    @Rule
+    var activityRule = ActivityTestRule(LauncherActivity::class.java)
+    
+    lateinit var device: UiDevice
+    lateinit var autoFlows: AutoFlows
+}
+```
+
+**Key Features:**
+
+- Uses UiAutomator for UI testing
+- Automatic data cleanup between tests
+- Custom test flows and helpers
+- Real Android components
+
+## Running Tests
+
+### Run All Unit Tests
+
+<CodeGroup>
+```bash Gradle
+./gradlew :android:apolloui:test
+```
+
+```bash Android Studio
+# Right-click on test directory → Run Tests
+```
+</CodeGroup>
+
+### Run Specific Test Class
+
+```bash
+./gradlew :android:apolloui:test --tests "io.muun.apollo.domain.action.AddressActionsTest"
+```
+
+### Run All Instrumentation Tests
+
+<Warning>
+  Instrumentation tests require a connected Android device or running emulator.
+</Warning>
+
+```bash
+./gradlew :android:apolloui:connectedAndroidTest
+```
+
+### Run Specific Instrumentation Test
+
+```bash
+./gradlew :android:apolloui:connectedAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=io.muun.apollo.presentation.LoginAndSignUpTests
+```
+
+## Test Coverage by Layer
+
+### Presentation Layer Tests
+
+**UI Tests:**
+
+- `LoginAndSignUpTests` - Authentication flows
+- `NewOperationTests` - Transaction creation
+- `ReceiveTests` - Payment receiving
+- `SecurityCenterTests` - Security features
+- `SettingsTests` - App settings
+- `P2PSetupTests` - Peer-to-peer setup
+- `IncomingSwapTests` - Lightning swaps
+- `LnUrlWithdrawTests` - LNURL withdrawals
+
+**Presenter Tests:**
+
+```
+android/apolloui/src/test/java/io/muun/apollo/presentation/presenters/
+├── LandingPresenterTest.kt
+├── CreatePasswordPresenterTest.kt
+└── CreateEmailPresenterTest.kt
+```
+
+**Utility Tests:**
+
+- `AmountFormattingTest` - Amount display formatting
+- `DisplayAmountTest` - Amount calculations
+- `ExtensionsTest` - Kotlin extensions
+- `UiUtilsTest` - UI utilities
+
+### Domain Layer Tests
+
+**Action Tests:**
+
+```
+android/apolloui/src/test/java/io/muun/apollo/domain/action/
+├── AddressActionsTest.kt
+├── ContactActionsTest.java
+├── CurrencyActionsTest.kt
+├── FetchRealTimeDataActionTest.kt
+├── NotificationActionsTest.kt
+├── PreloadFeeDataActionTest.kt
+├── SyncRealTimeFeesTest.kt
+├── incoming_swap/FulfillIncomingSwapActionTest.kt
+└── user/UpdateUserPreferencesActionTest.kt
+```
+
+**Model Tests:**
+
+- `OperationTest` - Transaction operations
+- `UserTest` - User model
+- `PhoneContactTest` - Contact handling
+
+**Utility Tests:**
+
+- `UriParserTest` - Bitcoin URI parsing
+- `StringUtilsTest` - String operations
+- `FeeWindowTest` - Fee estimation
+- `BitcoinUriTest` - Bitcoin address parsing
+
+### Data Layer Tests
+
+**Storage Tests:**
+
+- `SecureStorageProviderTest` - Secure storage (unit and instrumentation)
+- `UserPreferencesRepositoryTest` - Preferences handling
+
+**Network Tests:**
+
+- `ModelObjectsMapperTest` - API model mapping
+
+**System Tests:**
+
+- `PinManagerTest` - PIN authentication
+- `ApplicationLockTest` - App locking mechanism
+- `FileInfoProviderTest` - File operations
+- `ConnectivityInfoProviderTest` - Network state
+
+## Test Utilities
+
+### AutoFlows
+
+The `AutoFlows` class provides helpers for common test flows:
+
+```kotlin
+val autoFlows = AutoFlows(device, context)
+// Use autoFlows to simulate user interactions
+```
+
+### Test Data
+
+The `TestData` class provides sample data for tests:
+
+**Location:** `android/apolloui/src/androidTest/java/io/muun/apollo/utils/TestData.kt`
+
+### System Commands
+
+Control device state during tests:
+
+```kotlin
+SystemCommand.disableSoftKeyboard()  // Disable keyboard for UI tests
+SystemCommand.enableSoftKeyboard()   // Re-enable after tests
+```
+
+## Writing Tests
+
+### Unit Test Example
+
+```kotlin
+class MyFeatureTest : BaseUnitTest() {
+    
+    @Test
+    fun `should calculate correctly`() {
+        // Arrange
+        val input = 100
+        
+        // Act
+        val result = MyFeature.calculate(input)
+        
+        // Assert
+        assertEquals(200, result)
+    }
+}
+```
+
+### Instrumentation Test Example
+
+```kotlin
+class MyUITest : BaseInstrumentationTest() {
+    
+    @Test
+    fun testLoginFlow() {
+        // Use device and autoFlows for UI interactions
+        signInScreen.waitForLanding()
+        
+        // Perform test actions
+        // ...
+        
+        // Assertions
+        assertTrue(device.wait(Until.hasObject(By.text("Success")), 5000))
+    }
+}
+```
+
+## Test Best Practices
+
+### Data Cleanup
+
+Instrumentation tests automatically clean up data between runs:
+
+```kotlin
+private fun clearData() {
+    if (shouldClearData()) {
+        logoutActions.uncheckedDestroyWalletForUiTests()
+        syncApplicationDataAction.reset()
+        navigator.navigateToLauncher(context.applicationContext)
+    }
+}
+```
+
+This ensures:
+
+- No test pollution between runs
+- Fresh state for each test
+- Cleared user data and wallets
+
+### Test Isolation
+
+Each test should:
+
+- Be independent of other tests
+- Not rely on execution order
+- Clean up its own state
+- Use test-specific data
+
+### Mocking External Dependencies
+
+For unit tests:
+
+```kotlin
+@Mock
+lateinit var repository: UserRepository
+
+@Before
+fun setUp() {
+    MockitoAnnotations.initMocks(this)
+    Mockito.`when`(repository.fetchUser()).thenReturn(testUser)
+}
+```
+
+### UI Testing Guidelines
+
+- Disable soft keyboard to avoid flakiness
+- Use appropriate timeouts for UI elements
+- Clean up between tests
+- Use UiAutomator for cross-app interactions
+- Use Espresso for in-app interactions
+
+## Continuous Integration
+
+Tests are automatically run on:
+
+- Pull request creation
+- Commits to main branches
+- Release builds
+
+CI configuration:
+
+```yaml
+# .github/workflows/test.yml
+- name: Run Unit Tests
+  run: ./gradlew test
+
+- name: Run Instrumentation Tests
+  run: ./gradlew connectedAndroidTest
+```
+
+## Common Test Modules
+
+Tests utilize code from the **common** module:
+
+**Location:** `common/src/test/`
+
+This module contains:
+
+- Shared test utilities
+- Common test data
+- Cryptographic operation tests
+- Transaction crafting tests
+
+## Debugging Tests
+
+### Enable Verbose Logging
+
+```kotlin
+Log.i("test", "Debug message")
+```
+
+### Run with Stack Traces
+
+```bash
+./gradlew test --stacktrace
+```
+
+### Debug in Android Studio
+
+1. Set breakpoints in test code
+2. Right-click test class or method
+3. Select "Debug 'TestName'"
+
+### View Test Reports
+
+After running tests, view HTML reports:
+
+```bash
+open android/apolloui/build/reports/tests/testDebugUnitTest/index.html
+```
+
+## Test Dependencies
+
+Key testing libraries used:
+
+- **JUnit 4** - Test framework
+- **Mockito** - Mocking framework
+- **AndroidX Test** - Android testing support
+- **Espresso** - UI testing framework
+- **UiAutomator** - Cross-app UI testing
+- **MockitoKotlin** - Kotlin extensions for Mockito
+
+## Troubleshooting
+
+### Tests Fail on Clean Checkout
+
+Ensure you've built the project first:
+
+```bash
+./gradlew :android:apolloui:assembleDebug
+./gradlew :android:apolloui:test
+```
+
+### Instrumentation Tests Timeout
+
+Increase timeout in `gradle.properties`:
+
+```properties
+android.testInstrumentationRunnerArguments.timeout_msec=300000
+```
+
+### Device Not Found
+
+Verify device connection:
+
+```bash
+adb devices
+```
+
+Start an emulator if needed:
+
+```bash
+emulator -avd <avd_name>
+```
+
+### Out of Memory Errors
+
+Increase Gradle memory:
+
+```properties
+org.gradle.jvmargs=-Xmx4096m
+```
+
+## Next Steps
+
+- [Building Locally](/development/building-locally) - Set up your development environment
+- [Reproducible Builds](/development/reproducible-builds) - Build using Docker
+- [APK Verification](/development/verification) - Verify build authenticity

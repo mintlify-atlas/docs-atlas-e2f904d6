@@ -1,0 +1,486 @@
+---
+title: 'Invoice Management'
+description: 'Lightning Network invoice generation and handling'
+icon: 'bolt'
+---
+
+## Overview
+
+The invoice module provides comprehensive Lightning Network invoice creation, parsing, and management. It handles invoice secret generation, persistence, metadata encryption, and builder-pattern invoice construction.
+
+## Invoice Structure
+
+Represents a parsed Lightning Network invoice.
+
+```go
+type Invoice struct {
+    RawInvoice      string
+    FallbackAddress *MuunPaymentURI
+    Network         *Network
+    MilliSat        string
+    Destination     []byte
+    PaymentHash     []byte
+    Expiry          int64
+    Description     string
+    Sats            int64
+}
+```
+
+<ParamField path="RawInvoice" type="string">
+  The original invoice string (bech32 encoded)
+</ParamField>
+
+<ParamField path="FallbackAddress" type="*MuunPaymentURI">
+  Optional on-chain fallback address
+</ParamField>
+
+<ParamField path="MilliSat" type="string">
+  Payment amount in millisatoshis
+</ParamField>
+
+<ParamField path="Destination" type="[]byte">
+  Recipient node public key (compressed)
+</ParamField>
+
+<ParamField path="PaymentHash" type="[]byte">
+  Payment hash (32 bytes)
+</ParamField>
+
+<ParamField path="Expiry" type="int64">
+  Unix timestamp when invoice expires
+</ParamField>
+
+<ParamField path="Description" type="string">
+  Invoice description/memo
+</ParamField>
+
+<ParamField path="Sats" type="int64">
+  Payment amount in satoshis (MilliSat / 1000)
+</ParamField>
+
+## ParseInvoice
+
+Parses a Lightning Network invoice string.
+
+```go
+func ParseInvoice(rawInput string, network *Network) (*Invoice, error)
+```
+
+<ParamField path="rawInput" type="string" required>
+  Lightning invoice string (with or without "lightning:" prefix)
+</ParamField>
+
+<ParamField path="network" type="*Network" required>
+  Network configuration (mainnet, testnet, regtest)
+</ParamField>
+
+**Returns:** `*Invoice` - Parsed invoice structure  
+**Errors:** `ErrInvalidInvoice`
+
+### Example
+
+```go
+network := Mainnet()
+invoice, err := ParseInvoice(
+    "lnbc10u1p3pj257pp5yztkwjcz5ytjw...",
+    network,
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Amount: %d sats\n", invoice.Sats)
+fmt.Printf("Description: %s\n", invoice.Description)
+fmt.Printf("Expiry: %d\n", invoice.Expiry)
+```
+
+## Invoice Generation
+
+### InvoiceSecrets
+
+Bundle of cryptographic secrets required for invoice generation.
+
+```go
+type InvoiceSecrets struct {
+    preimage      []byte
+    paymentSecret []byte
+    keyPath       string
+    PaymentHash   []byte
+    IdentityKey   *HDPublicKey
+    UserHtlcKey   *HDPublicKey
+    MuunHtlcKey   *HDPublicKey
+    ShortChanId   int64
+}
+```
+
+<ParamField path="PaymentHash" type="[]byte">
+  SHA256 hash of the preimage
+</ParamField>
+
+<ParamField path="IdentityKey" type="*HDPublicKey">
+  Derived identity key for signing invoices
+</ParamField>
+
+<ParamField path="UserHtlcKey" type="*HDPublicKey">
+  User's HTLC key for receiving payments
+</ParamField>
+
+<ParamField path="MuunHtlcKey" type="*HDPublicKey">
+  Muun's HTLC key for receiving payments
+</ParamField>
+
+<ParamField path="ShortChanId" type="int64">
+  Synthetic short channel ID
+</ParamField>
+
+### GenerateInvoiceSecrets
+
+Generates new invoice secrets to register with the server.
+
+```go
+func GenerateInvoiceSecrets(
+    userKey, muunKey *HDPublicKey,
+) (*InvoiceSecretsList, error)
+```
+
+<ParamField path="userKey" type="*HDPublicKey" required>
+  User's HD public key
+</ParamField>
+
+<ParamField path="muunKey" type="*HDPublicKey" required>
+  Muun's HD public key
+</ParamField>
+
+**Returns:** `*InvoiceSecretsList` - List of secrets to register  
+**Generates:** Up to `MaxUnusedSecrets` (5) new secrets
+
+### Example
+
+```go
+// Generate secrets
+secretsList, err := GenerateInvoiceSecrets(userPubKey, muunPubKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %d secrets\n", secretsList.Length())
+
+// Access individual secrets
+for i := 0; i < secretsList.Length(); i++ {
+    secret := secretsList.Get(i)
+    fmt.Printf("Payment hash: %x\n", secret.PaymentHash)
+}
+```
+
+### PersistInvoiceSecrets
+
+Stores registered secrets in the local database.
+
+```go
+func PersistInvoiceSecrets(list *InvoiceSecretsList) error
+```
+
+<ParamField path="list" type="*InvoiceSecretsList" required>
+  List of secrets returned from server registration
+</ParamField>
+
+**Returns:** `error` if database operation fails
+
+### Example
+
+```go
+// Generate and persist secrets
+secrets, err := GenerateInvoiceSecrets(userKey, muunKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Register with server (not shown)
+// ...
+
+// Persist to local database
+err = PersistInvoiceSecrets(secrets)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## InvoiceBuilder
+
+Builder pattern for creating Lightning invoices.
+
+```go
+type InvoiceBuilder struct {
+    net         *Network
+    userKey     *HDPrivateKey
+    routeHints  []*RouteHints
+    description string
+    amountMSat  lnwire.MilliSatoshi
+    metadata    *OperationMetadata
+}
+```
+
+### Builder Methods
+
+#### Network
+
+```go
+func (i *InvoiceBuilder) Network(net *Network) *InvoiceBuilder
+```
+
+<ParamField path="net" type="*Network" required>
+  Network configuration
+</ParamField>
+
+#### UserKey
+
+```go
+func (i *InvoiceBuilder) UserKey(userKey *HDPrivateKey) *InvoiceBuilder
+```
+
+<ParamField path="userKey" type="*HDPrivateKey" required>
+  User's private key for signing
+</ParamField>
+
+#### Description
+
+```go
+func (i *InvoiceBuilder) Description(description string) *InvoiceBuilder
+```
+
+<ParamField path="description" type="string">
+  Invoice description/memo
+</ParamField>
+
+#### AmountSat
+
+```go
+func (i *InvoiceBuilder) AmountSat(amountSat int64) *InvoiceBuilder
+```
+
+<ParamField path="amountSat" type="int64">
+  Amount in satoshis
+</ParamField>
+
+#### AmountMSat
+
+```go
+func (i *InvoiceBuilder) AmountMSat(amountMSat int64) *InvoiceBuilder
+```
+
+<ParamField path="amountMSat" type="int64">
+  Amount in millisatoshis
+</ParamField>
+
+#### AddRouteHints
+
+```go
+func (i *InvoiceBuilder) AddRouteHints(routeHints *RouteHints) *InvoiceBuilder
+```
+
+<ParamField path="routeHints" type="*RouteHints" required>
+  Routing hints for reaching the node
+</ParamField>
+
+#### Metadata
+
+```go
+func (i *InvoiceBuilder) Metadata(metadata *OperationMetadata) *InvoiceBuilder
+```
+
+<ParamField path="metadata" type="*OperationMetadata">
+  Additional encrypted metadata
+</ParamField>
+
+#### Build
+
+Creates and returns the signed invoice string.
+
+```go
+func (i *InvoiceBuilder) Build() (string, error)
+```
+
+**Returns:** `string` - Bech32 encoded Lightning invoice  
+**Errors:** Database errors, signing errors, no unused secrets available
+
+### Complete Example
+
+<CodeGroup>
+
+```go Basic Invoice
+builder := &InvoiceBuilder{}
+invoice, err := builder.
+    Network(Mainnet()).
+    UserKey(userPrivateKey).
+    Description("Coffee payment").
+    AmountSat(5000).
+    Build()
+
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Invoice: %s\n", invoice)
+```
+
+```go Invoice with Route Hints
+routeHints := &RouteHints{
+    Pubkey:                    "03...",
+    FeeBaseMsat:               1000,
+    FeeProportionalMillionths: 100,
+    CltvExpiryDelta:           40,
+}
+
+builder := &InvoiceBuilder{}
+invoice, err := builder.
+    Network(Mainnet()).
+    UserKey(userPrivateKey).
+    Description("Payment with routing").
+    AmountMSat(5000000).
+    AddRouteHints(routeHints).
+    Build()
+```
+
+```go Invoice with Metadata
+metadata := &OperationMetadata{
+    LnurlSender: "user@domain.com",
+}
+
+builder := &InvoiceBuilder{}
+invoice, err := builder.
+    Network(Mainnet()).
+    UserKey(userPrivateKey).
+    Description("LNURL payment").
+    AmountSat(10000).
+    Metadata(metadata).
+    Build()
+```
+
+</CodeGroup>
+
+## RouteHints
+
+Routing information for reaching the invoice recipient.
+
+```go
+type RouteHints struct {
+    Pubkey                    string
+    FeeBaseMsat               int64
+    FeeProportionalMillionths int64
+    CltvExpiryDelta           int32
+}
+```
+
+<ParamField path="Pubkey" type="string" required>
+  Public key of the routing node (hex)
+</ParamField>
+
+<ParamField path="FeeBaseMsat" type="int64" required>
+  Base routing fee in millisatoshis
+</ParamField>
+
+<ParamField path="FeeProportionalMillionths" type="int64" required>
+  Proportional fee in millionths (ppm)
+</ParamField>
+
+<ParamField path="CltvExpiryDelta" type="int32" required>
+  CLTV expiry delta in blocks
+</ParamField>
+
+## OperationMetadata
+
+Encrypted metadata stored with invoices.
+
+```go
+type OperationMetadata struct {
+    Invoice     string `json:"invoice,omitempty"`
+    LnurlSender string `json:"lnurlSender,omitempty"`
+}
+```
+
+<ParamField path="Invoice" type="string">
+  The generated invoice string
+</ParamField>
+
+<ParamField path="LnurlSender" type="string">
+  LNURL sender identifier
+</ParamField>
+
+## GetInvoiceMetadata
+
+Retrieves encrypted metadata for a payment hash.
+
+```go
+func GetInvoiceMetadata(paymentHash []byte) (string, error)
+```
+
+<ParamField path="paymentHash" type="[]byte" required>
+  Payment hash (32 bytes)
+</ParamField>
+
+**Returns:** `string` - Encrypted metadata  
+**Errors:** Database errors, invoice not found
+
+## Invoice Features
+
+Generated invoices include the following features:
+
+```go
+// Required features
+features.Set(lnwire.TLVOnionPayloadRequired)
+features.Set(lnwire.PaymentAddrRequired)
+```
+
+### Standard Parameters
+
+- **CLTV Expiry**: 72 blocks (~12 hours)
+- **Expiry Time**: 24 hours
+- **Payment Secret**: Required for all invoices
+- **TLV Onion**: Required for payment secrets
+
+<Note>
+Payment secrets are required in all Muun invoices to prevent amount theft attacks. This has been standard since LND v0.12.0 (January 2021).
+</Note>
+
+## Key Derivation Paths
+
+Invoice keys are derived using the following structure:
+
+```go
+Base path: m/schema:1'/recovery:1'/invoices:4/<random1>/<random2>
+├── /0 - Identity key (invoice signing)
+├── /1 - HTLC key (payment receiving)
+└── /3 - Metadata encryption key
+```
+
+## Constants
+
+```go
+const MaxUnusedSecrets = 5
+
+const (
+    identityKeyChildIndex          = 0
+    htlcKeyChildIndex              = 1
+    encryptedMetadataKeyChildIndex = 3
+)
+
+const lightningScheme = "lightning:"
+```
+
+## Security Features
+
+### Secret Management
+- Preimages generated with cryptographically secure randomness
+- Payment secrets unique per invoice
+- Automatic secret rotation (max 5 unused)
+- Secure key derivation with random indexes
+
+### Metadata Encryption
+- Metadata encrypted with derived encryption key
+- Unique encryption key per invoice
+- JSON encoding before encryption
+
+### Invoice Signing
+- Signed with derived identity key
+- Compact signature format
+- BIP340-compatible for modern wallets
