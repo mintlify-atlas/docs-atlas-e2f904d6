@@ -1,0 +1,151 @@
+{
+  "projectType": "saas",
+  "projectName": "Muun Wallet",
+  "projectDescription": "Non-custodial 2-of-2 multisig Bitcoin and Lightning wallet for Android with a focus on security and ease of use",
+  "theme": "aspen",
+  "primaryColor": "#1A6BFF",
+  "lightColor": "#3D8BFF",
+  "darkColor": "#0052E3",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "requirements"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/clean-architecture",
+              "architecture/data-layer",
+              "architecture/domain-layer",
+              "architecture/presentation-layer"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/multisig",
+              "features/lightning-network",
+              "features/submarine-swaps",
+              "features/security-cards",
+              "features/emergency-kit",
+              "features/recovery"
+            ]
+          },
+          {
+            "group": "Building & Development",
+            "pages": [
+              "development/building-locally",
+              "development/reproducible-builds",
+              "development/verification",
+              "development/testing"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/key-management",
+              "security/challenge-keys",
+              "security/biometrics",
+              "security/auditing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Libwallet API",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/gomobile-integration"
+            ]
+          },
+          {
+            "group": "Core APIs",
+            "pages": [
+              "api/addresses",
+              "api/transactions",
+              "api/invoices",
+              "api/submarine-swaps"
+            ]
+          },
+          {
+            "group": "Key Management",
+            "pages": [
+              "api/hdkeys",
+              "api/encryption",
+              "api/challenge-keys"
+            ]
+          },
+          {
+            "group": "Protocols",
+            "pages": [
+              "api/bip21",
+              "api/lnurl",
+              "api/musig2"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/wallet-service",
+              "api/diagnostic-mode",
+              "api/storage"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Resources",
+            "pages": [
+              "reference/changelog",
+              "reference/contributing",
+              "reference/responsible-disclosure"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Non-custodial 2-of-2 multisig wallet",
+    "Lightning Network support with submarine swaps",
+    "Hardware security card integration (NFC)",
+    "Emergency kit for wallet recovery",
+    "Clean architecture with data/domain/presentation layers",
+    "Reproducible builds for security verification",
+    "Biometric authentication support",
+    "Cross-platform libwallet core (Go + Rust)",
+    "BIP21, LNURL, and MuSig2 protocol support"
+  ],
+  "publicApiSurface": [
+    "libwallet.CreateAddress",
+    "libwallet.SignTransaction",
+    "libwallet.CreateInvoice",
+    "libwallet.ValidateIncomingSwap",
+    "libwallet.GenerateRecoveryCode",
+    "libwallet.SetupChallengeKey",
+    "libwallet.HDPrivateKey.DeriveFrom",
+    "libwallet.ValidateLNURL",
+    "libwallet.EncryptWithMuunKey",
+    "libwallet.SetupSecurityCard",
+    "libwallet.StartDiagnosticSession",
+    "WalletService.SetupSecurityCard",
+    "WalletService.SignMessageSecurityCard",
+    "WalletService.PerformDiagnosticScanForUtxos",
+    "WalletService.PrepareSweepTx"
+  ]
+}
